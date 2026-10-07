@@ -170,7 +170,7 @@
 
 ## 6. 交付与提交规范
 
-- commit message：`<type>(<scope>): <中文说明>`，`type ∈ feat | fix | refactor | test | docs | chore | build | perf`
+- commit message：`<type>(<scope>): <中文说明>`，`type ∈ feat | fix | refactor | test | docs | chore | build | perf | revert`
   - 例：`feat(apid): 新增 /healthz 与优雅退出`
 - 每个 commit 必须：能编译 + 测试通过；做不到就用 `wip(scope): ...` 并在正文说明差在哪
 - **每天必须 commit**（计划书铁律 #1），哪怕只写了一个测试
@@ -185,10 +185,13 @@
 
 - Day 0：文档骨架已建，但 `docs/00-baseline.md` 的验收清单未勾、第 1/4 节仍为空白（**未闭环**）
 - Day 1：`labs/w1/01–03` ✅（`go test -race ./labs/w1/...` 全绿）；`04–10` ⬜ 待用户完成（学习区，不代写）
-- Day 2：✅ 工程骨架（配置分层 / slog + trace_id / 四中间件 / `/healthz` / 优雅退出 / Makefile），
-  commit `1c5d612`；**未做**：业务错误码体系 `AppError`（建议 Day 4 与 CRUD 一起做）
-- Day 3+：未开始
-- 基线提交：`8801ea7`（骨架+规则）、`cb30c50`（计划/基线文档）、`9a5d156`（labs 01–03）
+- Day 2：⚠️ **agent 写的实现已回退**（`c911568`）。当前仓库只有骨架（`29a82c7`）：
+  签名 + 契约注释 + 28 处 `TODO(day2)`，**实现由用户写**。
+  已给的管道代码：`Makefile`、`configs/config.yaml`、`internal/version`。
+  待实现顺序见 `docs/daily-log.md` 的 Day 2 清单 + 验收清单
+- Day 3+：未开始（Day 2 实现完成后再进）
+- 基线提交：`8801ea7`（骨架+规则）、`cb30c50`（计划/基线文档）、`9a5d156`（labs 01–03）、
+  `6b247b2`（规则：关键代码用户写）、`c911568`（回退实现）、`29a82c7`（只留框架）
 
 **常用命令**
 
