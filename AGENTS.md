@@ -145,23 +145,27 @@
 
 **当前进度（agent 每次开工前先核对，过时就要更新）**
 
-- Day 0：文档骨架已建，但 `docs/00-baseline.md` 的验收清单未勾、第 1/4 节仍为空白；Day 0/1 产出**尚未 commit**
-- Day 1：`labs/w1/01–03` ✅（`go test -race ./labs/w1/...` 全绿）；`04–10` ⬜ 待用户完成
-- Day 2+：未开始
+- Day 0：文档骨架已建，但 `docs/00-baseline.md` 的验收清单未勾、第 1/4 节仍为空白（**未闭环**）
+- Day 1：`labs/w1/01–03` ✅（`go test -race ./labs/w1/...` 全绿）；`04–10` ⬜ 待用户完成（学习区，不代写）
+- Day 2：✅ 工程骨架（配置分层 / slog + trace_id / 四中间件 / `/healthz` / 优雅退出 / Makefile），
+  commit `1c5d612`；**未做**：业务错误码体系 `AppError`（建议 Day 4 与 CRUD 一起做）
+- Day 3+：未开始
+- 基线提交：`8801ea7`（骨架+规则）、`cb30c50`（计划/基线文档）、`9a5d156`（labs 01–03）
 
 **常用命令**
 
 ```bash
-gofmt -l .                 # 必须无输出
-go vet ./...               # 必须无输出
-go test -race ./...        # 必须全绿
-go run ./cmd/apid          # 本地起服务
-make help                  # 查看全部工程命令（Makefile 建好后）
+make help                  # 查看全部工程命令
+make check                 # 提交前一键检查：fmt + vet + test -race
+make run                   # 本地起服务（默认 :8080）
+make build                 # 编译到 bin/apid，版本号由 git + ldflags 注入
+KF_SERVER_ADDR=:18080 ./bin/apid   # 环境变量覆盖配置（验证配置分层）
+curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / 在途请求数
 ```
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
 
-1. 把 Day 0/1 产出按规范提交
-2. 收尾 `docs/00-baseline.md`（填日期、4 条可验证目标、验收清单）
-3. `docs/daily-log.md` 补 Day 0/1 三行日志
-4. 卸载或安装 `golangci-lint`（Zed 里该扩展的 language server 因缺二进制反复崩溃）
+1. 收尾 `docs/00-baseline.md`（填日期、4 条可验证目标、勾验收清单）
+2. `docs/daily-log.md` 的 Day 0/1 「卡在哪 / 明天第一步 / 用时」由用户补
+3. 卸载或安装 `golangci-lint`（Zed 里该扩展的 language server 因缺二进制反复崩溃）
+4. Day 3 前定：迁移工具用 `golang-migrate` 还是 `goose`（需用户拍板）
