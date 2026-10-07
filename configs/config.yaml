@@ -1,0 +1,20 @@
+# KnowFlow apid 默认配置
+#
+# 加载优先级（高者覆盖低者）：内置默认值 < 本文件 < 环境变量（KF_ 前缀）
+# 为什么把默认配置提交进仓库：新人 clone 下来就能跑，不需要"问同事要一份配置"。
+# 凡是密钥都不写在这里——只从环境变量读。
+
+app:
+  name: knowflow-apid
+  env: dev # dev / test / prod；影响日志级别与错误详情是否外露
+
+server:
+  addr: ":8080" # ":8080" = 监听所有网卡；只给本机用写成 "127.0.0.1:8080"
+  read_timeout: 5s # 读完整请求（header+body）的上限，防慢客户端一直占着连接
+  write_timeout: 10s # 写响应的上限
+  idle_timeout: 60s # keep-alive 空闲连接保持多久
+  shutdown_timeout: 15s # 优雅退出时，最多等在途请求多久（超时则强制关）
+
+log:
+  level: info # debug / info / warn / error
+  format: json # json（线上，便于按字段检索）/ text（本地肉眼读）
