@@ -1,0 +1,28 @@
+# 编译产物与测试输出
+/bin/
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+
+# 环境变量与密钥（.env.example 例外，允许提交）
+.env
+.env.*
+!.env.example
+
+# 本地运行数据（docker-compose 挂载卷）
+/data/
+/tmp/
+/logs/
+
+# 编辑器与系统
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 个人化的 agent 规则覆盖（不进仓库；项目规则见 AGENTS.md）
+AGENTS.local.md
+CLAUDE.md
+CLAUDE.local.md
