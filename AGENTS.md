@@ -189,10 +189,15 @@
 **当前进度（agent 每次开工前先核对，过时就要更新）**
 
 - 仓库已完成整理：移出学习用的 `labs/` 与个人规划文档，只保留生产项目内容
-- 工程骨架就绪（`29a82c7`）：`cmd/apid`、`internal/{config,apperr,observability,version,transport/rest}`，
-  签名 + 契约注释 + TODO，**实现由用户写**；已给的管道代码：`Makefile`、`configs/config.yaml`、`internal/version`
-- **`internal/apperr` 正在实现中**（用户手上有未提交的改动，agent 不要覆盖/提交它）
-- 其余模块尚未开始；`go test -race ./...` 目前没有测试用例（等于没有质量门禁）
+- 工程骨架（`29a82c7`）：`cmd/apid`、`internal/{config,apperr,observability,version,transport/rest}`；
+  管道代码 `Makefile`、`configs/config.yaml`、`internal/version` 已就绪
+- ✅ `internal/apperr`（`722f074`）：业务错误与错误码，含表驱动单测
+- ✅ `internal/transport/rest/respond`（`31b3b3d`）：`JSON` / `Error` / `StatusForCode` / `FromError`，
+  4xx 回显业务 message、5xx 固定文案且原因只进日志（有测试钉死"响应体不泄露内部信息"）
+- 🚧 **`internal/config` 进行中**（用户手上有未提交的改动，agent 不要覆盖/提交它）
+- ⬜ 待实现：`internal/observability`、`internal/transport/rest/middleware`、`rest/server.go`
+  （`routes` / `handleHealthz` / `handleDebugSleep` / `handleNotFound` / `Start` / `Shutdown`）、`cmd/apid`
+- 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 
 **常用命令**
 
@@ -207,13 +212,14 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
 
-1. **远端落后本地 11 个提交，用户 2026-10-07 选择「先不推」**。推送需要 GitHub 凭据：
+1. **远端落后本地 14 个提交，用户 2026-10-07 选择「先不推」**。推送需要 GitHub 凭据：
    `git push origin main` 会提示 Username + Password（Password 处粘贴 PAT，不是账号密码）。
    `origin` 已是直连 `https://github.com/huakaifugui114514/working.git`；
    仓库级 gh-proxy `insteadOf` 改写已移除，网络不通时可用下面命令恢复：
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
 2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
-3. `internal/apperr` 实现 + 单测完成后提交（用户手上；agent 不得代写、不得代为提交）
+3. `internal/config` 实现中（用户在写）：写完跑 `make check` 并提交 `feat(config): ...`；
+   agent 不得覆盖或代为提交用户未完成的改动
 4. 补 `README.md` 的「快速开始」章节——等 `/healthz` 能真正跑起来再写，不许先写成已可用
 5. 卸载或安装 `golangci-lint`（Zed 里该扩展的 language server 因缺二进制反复崩溃）；装上后 `Makefile` 增加 `lint` 目标
 6. 迁移工具二选一：`golang-migrate` 还是 `goose`（需用户拍板，接数据库前定）
