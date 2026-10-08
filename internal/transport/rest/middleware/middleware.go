@@ -51,7 +51,9 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 //
 // 契约：没有它，handler 里一次 nil 解引用就会带走整个进程（线上表现为"服务突然没了"）。
 //   - panic 内容与堆栈（debug.Stack()）**只进日志**，响应里只回统一错误体
-//   - 响应体走 respond.Error(..., http.StatusInternalServerError, respond.CodeInternal, ...)
+//   - 响应体走 respond.Error(w, logger, http.StatusInternalServerError,
+//     apperr.CodeInternal, respond.DefaultInternalMessage)：
+//     错误码用 apperr 的业务码，文案用固定文案——panic 详情绝不能出现在响应里
 func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 	panic("TODO(day2): 实现 Recover")
 }

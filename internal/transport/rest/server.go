@@ -91,12 +91,16 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // handleDebugSleep 睡一会儿，用来验证优雅退出（仅 dev 注册）。
 //
 // 契约：查询参数 d 默认 2s，必须是 0~30s 之间的合法时长，否则返回 400 + 统一错误体；
+// 参数不合法属于业务语义，错误码用 apperr.CodeInvalidArgument（状态码交给 respond.StatusForCode）；
 // 等待期间要监听 r.Context().Done()（客户端断开或服务端关停时立刻返回，不傻等）。
 func (s *Server) handleDebugSleep(w http.ResponseWriter, r *http.Request) {
 	panic("TODO(day2): 实现调试用慢请求")
 }
 
 // handleNotFound 统一 404。
+//
+// 契约：用 respond.CodeRouteNotFound（传输层自己的码，与 apperr.CodeNotFound「资源不存在」
+// 刻意区分），状态码走 respond.StatusForCode，别在 handler 里硬编码 404。
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	panic("TODO(day2): 实现统一 404")
 }
