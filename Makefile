@@ -19,6 +19,12 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Commit=$(COMMIT) \
 	-X $(MODULE)/internal/version.BuildTime=$(BUILD_TIME)
 
+# golangci-lint：优先用 PATH 里的，找不到就用 go install 的默认落点 $(go env GOPATH)/bin。
+# 版本必须是 v2.3.1 —— 它要求 Go 1.23，与本项目 go.mod 一致（v2.4.0+ 要 Go 1.24）。
+# 装：go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.3.1
+GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
+GOLANGCI_LINT_VERSION := v2.3.1
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -35,6 +41,16 @@ vet: ## 静态检查
 	@go vet ./...
 	@echo "go vet 通过"
 
+.PHONY: lint
+lint: ## 静态检查（golangci-lint，配置见 .golangci.yml）
+	@test -x "$(GOLANGCI_LINT)" || { \
+		echo "缺少 golangci-lint，请先执行："; \
+		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)"; \
+		exit 1; \
+	}
+	@"$(GOLANGCI_LINT)" run ./...
+	@echo "golangci-lint 通过"
+
 .PHONY: test
 test: ## 跑全部测试（带竞态检测）
 	@go test -race -count=1 ./...
@@ -50,7 +66,7 @@ run: ## 本地运行（go run，版本号为 dev）
 	@go run ./cmd/$(APP)
 
 .PHONY: check
-check: fmt vet test ## 提交前一键检查：fmt + vet + test
+check: fmt vet lint test ## 提交前一键检查：fmt + vet + lint + test
 
 .PHONY: tidy
 tidy: ## 整理依赖

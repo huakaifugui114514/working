@@ -1,0 +1,63 @@
+# golangci-lint 配置（v2 格式，对应 golangci-lint v2.x）
+#
+# 版本策略：linter 版本要跟项目 go.mod 里的 Go 版本兼容。
+# 本项目 `go 1.23`，因此钉在 v2.3.1（v2.4.0 起要求 Go 1.24，装最新会顺带下载整个工具链）。
+# 升级 Go 版本时，这条注释和 Makefile 里的版本号要一起改。
+#
+# 设计原则：只开「能指出真问题」的 linter。规则太多、误报太多，团队就会习惯性忽略输出，
+# 静态检查就白做了。
+
+version: "2"
+
+linters:
+  # standard = errcheck + govet + ineffassign + staticcheck + unused（官方推荐基线）
+  default: standard
+  enable:
+    - bodyclose # http 响应体必须关闭，漏了就是连接泄漏
+    - errorlint # 错误比较必须用 errors.Is/As，不能用 == 或类型断言
+    - nilerr # 返回 nil 却把 err 吞掉（"if err != nil { return nil }"）
+    - noctx # 发出请求却不带 context，超时/取消传不下去
+    - revive # golint 的继任者：命名、注释、导出符号规范
+    - unconvert # 多余的显式类型转换
+    - whitespace # 首尾多余空行
+    - misspell # 注释/字符串里的拼写错误
+
+  settings:
+    revive:
+      rules:
+        # 导出符号必须有注释——AGENTS.md §1.1 的要求，交给工具兜底
+        - name: exported
+          arguments: [checkPrivateReceivers, disableStutteringCheck]
+        - name: package-comments
+        - name: indent-error-flow
+        - name: error-strings
+
+  exclusions:
+    # 官方预置的误报豁免：不因为风格问题打断人
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # 测试文件里不强制关闭 bodyclose、不追究未使用的参数
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - revive
+      # ⚠️ 临时豁免，TODO(day2)：server.go 是待实现的骨架，所有字段/方法都还没被引用，
+      # unused 会把整份文件报成"未使用"。等 routes/handleXxx/Start/Shutdown 实现完，
+      # 请删掉这条——豁免留着会掩盖真正的死代码。
+      - path: internal/transport/rest/server\.go
+        linters:
+          - unused
+
+formatters:
+  enable:
+    - gofmt # 与 make fmt 一致
+    - goimports # import 分组与排序
+
+issues:
+  # 默认最多显示 50 条；全量列出，避免"改完 50 条又冒出 50 条"
+  max-issues-per-linter: 0
+  max-same-issues: 0

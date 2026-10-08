@@ -40,7 +40,10 @@ func TestWrapPreservesCauseChain(t *testing.T) {
 	if !errors.Is(e, base) {
 		t.Error("errors.Is(e, base) = false, want true")
 	}
-	// Unwrap 直接返回 Cause
+	// Unwrap 直接返回 Cause。
+	// 这里要断言的是"同一个实例"，不是"链上找得到"，所以刻意用 != 而不是 errors.Is——
+	// 换成一个包装过的错误也必须让这条失败（errorlint 的规则针对哨兵比较，此处豁免）。
+	//nolint:errorlint // 见上：断言实例同一性
 	if got := e.Unwrap(); got != base {
 		t.Errorf("Unwrap() = %v, want %v", got, base)
 	}

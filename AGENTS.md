@@ -40,7 +40,8 @@
 ### 1.2 流程规范（每个改动都要走完）
 
 1. **先方案后动手**：超过「1 个文件 + 30 行」的改动，先给方案（改什么、为什么、影响面、怎么验证），等用户确认再写。
-2. **小步提交**：一个 commit 只做一件事；commit 前必须 `gofmt` + `go vet` + `go test -race` 全绿。
+2. **小步提交**：一个 commit 只做一件事；commit 前必须 `make check` 全绿
+   （= `gofmt` + `go vet` + `golangci-lint` + `go test -race`）。
 3. **测试**：业务逻辑（`internal/` 下的 service / 工具函数）必须有表驱动单测；HTTP 层用 `httptest`；外部依赖（MySQL/Redis）用接口隔离，单测不连真库。禁止「为了让测试过」而改断言或删用例。
 4. **可观测**：所有服务用 `log/slog` 结构化日志；请求链路带 `trace_id`；关键路径有明确的日志级别（error/warn/info/debug）。
 5. **不许假完成**：不做「看起来跑通了」的演示代码；不留「以后再补」的空实现（宁可显式 `panic("not implemented")` 并写进日志）；**没实现完的模块不许在 README 里写成已可用**。
@@ -203,7 +204,8 @@
 
 ```bash
 make help                  # 查看全部工程命令
-make check                 # 提交前一键检查：fmt + vet + test -race
+make check                 # 提交前一键检查：fmt + vet + lint + test -race
+make lint                  # 只跑 golangci-lint（配置 .golangci.yml，v2.3.1）
 make run                   # 本地起服务（默认 :8080）
 make build                 # 编译到 bin/apid，版本号由 git + ldflags 注入
 KF_SERVER_ADDR=:18080 ./bin/apid   # 环境变量覆盖配置（验证配置分层）
@@ -221,5 +223,7 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 3. `internal/config` 实现中（用户在写）：写完跑 `make check` 并提交 `feat(config): ...`；
    agent 不得覆盖或代为提交用户未完成的改动
 4. 补 `README.md` 的「快速开始」章节——等 `/healthz` 能真正跑起来再写，不许先写成已可用
-5. 卸载或安装 `golangci-lint`（Zed 里该扩展的 language server 因缺二进制反复崩溃）；装上后 `Makefile` 增加 `lint` 目标
+5. ✅ golangci-lint 已装（v2.3.1，`~/go/bin/`），`make lint` 已接入 `make check`。
+   **待办**：`internal/transport/rest/server.go` 实现完成后，删掉 `.golangci.yml` 里针对该文件的
+   `unused` 临时豁免（骨架期字段未被引用，实现完就不需要了）
 6. 迁移工具二选一：`golang-migrate` 还是 `goose`（需用户拍板，接数据库前定）
