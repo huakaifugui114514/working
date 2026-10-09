@@ -197,8 +197,10 @@
   4xx 回显业务 message、5xx 固定文案且原因只进日志（有测试钉死"响应体不泄露内部信息"）
 - ✅ `internal/config`（`11776e4`）：三层加载（默认值 < YAML < 环境变量）+ `errors.Join` 全量校验；
   强类型取值集合 `Env`/`LogLevel`/`LogFormat` + `Valid()`；**默认值一致性由 `TestConfigFileMatchesDefaults` 钉死**
-- ⬜ 待实现：`internal/observability`、`internal/transport/rest/middleware`、`rest/server.go`
-  （`routes` / `handleHealthz` / `handleDebugSleep` / `handleNotFound` / `Start` / `Shutdown`）、`cmd/apid`
+- ✅ `internal/observability`（`dfa886a`）：`NewLogger`（json/text + 级别过滤）、`traceHandler` 自动注入
+  `trace_id`、`WithTraceID`/`TraceIDFrom`/`NewTraceID`（16 位十六进制，hex 编码）；7 组单测
+- ⬜ 待实现：`internal/transport/rest/middleware`（RequestID / InFlight / AccessLog / Recover）、
+  `rest/server.go`（`routes` / `handleHealthz` / `handleDebugSleep` / `handleNotFound` / `Start` / `Shutdown`）、`cmd/apid`
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -223,8 +225,10 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    仓库级 gh-proxy `insteadOf` 改写已移除，网络不通时可用下面命令恢复：
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
 2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
-3. ✅ `internal/config` 已完成并提交（`11776e4`）。下一个实现目标：`internal/observability`
-   （slog + trace_id），它的接口已定：`NewLogger(level, format string, w io.Writer)`
+3. ✅ `internal/config`（`11776e4`）、`internal/observability`（`dfa886a`）已完成。
+   下一个实现目标：`internal/transport/rest/middleware` 的四个中间件（RequestID / InFlight /
+   AccessLog / Recover）——顺序与契约见文件内注释，`RequestID` 里用
+   `observability.NewTraceID()`（注意：生成失败时记日志并跳过，不要让请求失败）
 4. 补 `README.md` 的「快速开始」章节——等 `/healthz` 能真正跑起来再写，不许先写成已可用
 5. ✅ golangci-lint 已装（v2.14.0，`~/go/bin/`），`make lint` 已接入 `make check`。
    **待办**：`internal/transport/rest/server.go` 实现完成后，删掉 `.golangci.yml` 里针对该文件的
