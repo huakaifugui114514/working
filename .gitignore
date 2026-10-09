@@ -11,6 +11,11 @@ coverage.html
 .env.*
 !.env.example
 
+# 本地/环境专属配置。约定：configs/config.yaml 是"默认配置"，必须与代码里的 Default() 一致；
+# 需要偏离默认值的本地配置放这里，别去改那份提交的文件
+configs/config.local.yaml
+configs/config.*.local.yaml
+
 # 本地运行数据（docker-compose 挂载卷）
 /data/
 /tmp/
