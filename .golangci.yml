@@ -47,6 +47,8 @@ linters:
           - bodyclose
           - errcheck
           - revive
+          # httptest.NewRequest 不发起真实请求，要求它带 context 是噪音
+          - noctx
       # ⚠️ 临时豁免，TODO(day2)：server.go 是待实现的骨架，所有字段/方法都还没被引用，
       # unused 会把整份文件报成"未使用"。等 routes/handleXxx/Start/Shutdown 实现完，
       # 请删掉这条——豁免留着会掩盖真正的死代码。
