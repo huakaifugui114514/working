@@ -195,10 +195,13 @@
 - ✅ `internal/apperr`（`722f074`）：业务错误与错误码，含表驱动单测
 - ✅ `internal/transport/rest/respond`（`31b3b3d`）：`JSON` / `Error` / `StatusForCode` / `FromError`，
   4xx 回显业务 message、5xx 固定文案且原因只进日志（有测试钉死"响应体不泄露内部信息"）
-- 🚧 **`internal/config` 进行中**（用户手上有未提交的改动，agent 不要覆盖/提交它）
+- ✅ `internal/config`（`11776e4`）：三层加载（默认值 < YAML < 环境变量）+ `errors.Join` 全量校验；
+  强类型取值集合 `Env`/`LogLevel`/`LogFormat` + `Valid()`；**默认值一致性由 `TestConfigFileMatchesDefaults` 钉死**
 - ⬜ 待实现：`internal/observability`、`internal/transport/rest/middleware`、`rest/server.go`
   （`routes` / `handleHealthz` / `handleDebugSleep` / `handleNotFound` / `Start` / `Shutdown`）、`cmd/apid`
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
+- 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
+  `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
 
 **常用命令**
 
@@ -214,14 +217,14 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
 
-1. **远端落后本地 14 个提交，用户 2026-10-07 选择「先不推」**。推送需要 GitHub 凭据：
+1. **远端落后本地 18 个提交，用户 2026-10-07 选择「先不推」**。推送需要 GitHub 凭据：
    `git push origin main` 会提示 Username + Password（Password 处粘贴 PAT，不是账号密码）。
    `origin` 已是直连 `https://github.com/huakaifugui114514/working.git`；
    仓库级 gh-proxy `insteadOf` 改写已移除，网络不通时可用下面命令恢复：
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
 2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
-3. `internal/config` 实现中（用户在写）：写完跑 `make check` 并提交 `feat(config): ...`；
-   agent 不得覆盖或代为提交用户未完成的改动
+3. ✅ `internal/config` 已完成并提交（`11776e4`）。下一个实现目标：`internal/observability`
+   （slog + trace_id），它的接口已定：`NewLogger(level, format string, w io.Writer)`
 4. 补 `README.md` 的「快速开始」章节——等 `/healthz` 能真正跑起来再写，不许先写成已可用
 5. ✅ golangci-lint 已装（v2.3.1，`~/go/bin/`），`make lint` 已接入 `make check`。
    **待办**：`internal/transport/rest/server.go` 实现完成后，删掉 `.golangci.yml` 里针对该文件的
