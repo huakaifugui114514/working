@@ -20,10 +20,14 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.BuildTime=$(BUILD_TIME)
 
 # golangci-lint：优先用 PATH 里的，找不到就用 go install 的默认落点 $(go env GOPATH)/bin。
-# 版本必须是 v2.3.1 —— 它要求 Go 1.23，与本项目 go.mod 一致（v2.4.0+ 要 Go 1.24）。
-# 装：go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.3.1
+# 版本必须 >= 项目 go.mod 里的 Go 版本，否则 linter 直接拒绝启动：
+#   "the Go language version used to build golangci-lint is lower than the targeted Go version"
+# 本项目 go 1.27.2，故用 v2.14.0，并且必须**用同一版本的工具链编译**它：
+#   GOTOOLCHAIN=go1.27.2 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+# 不加 GOTOOLCHAIN 的话，go install 会按被安装包的 go.mod 选工具链（1.26.9），
+# 编出来的 linter 版本号够新、Go 版本却仍然偏低，照样拒绝启动。
 GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
-GOLANGCI_LINT_VERSION := v2.3.1
+GOLANGCI_LINT_VERSION := v2.14.0
 
 .DEFAULT_GOAL := help
 

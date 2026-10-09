@@ -65,7 +65,7 @@
 
 | 领域 | 选型 | 备注 |
 |---|---|---|
-| 语言 | Go 1.23+ | `go.mod` 已声明 `go 1.23` |
+| 语言 | Go 1.27+ | `go.mod` 声明 `go 1.27.2`；GOTOOLCHAIN=auto 自动拉取工具链 |
 | HTTP | 先标准库 `net/http`，业务 CRUD 阶段引入 **gin** | 先用标准库是为了看懂 `Server.Shutdown`、`ServeMux` 这些被框架藏起来的机制 |
 | 配置 | YAML（`gopkg.in/yaml.v3`）+ 环境变量覆盖 | 不用 viper（体积大、行为隐晦） |
 | 日志 | 标准库 `log/slog` + JSON handler | 不引第三方日志库 |
@@ -208,7 +208,7 @@
 ```bash
 make help                  # 查看全部工程命令
 make check                 # 提交前一键检查：fmt + vet + lint + test -race
-make lint                  # 只跑 golangci-lint（配置 .golangci.yml，v2.3.1）
+make lint                  # 只跑 golangci-lint（配置 .golangci.yml，v2.14.0）
 make run                   # 本地起服务（默认 :8080）
 make build                 # 编译到 bin/apid，版本号由 git + ldflags 注入
 KF_SERVER_ADDR=:18080 ./bin/apid   # 环境变量覆盖配置（验证配置分层）
@@ -226,7 +226,7 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 3. ✅ `internal/config` 已完成并提交（`11776e4`）。下一个实现目标：`internal/observability`
    （slog + trace_id），它的接口已定：`NewLogger(level, format string, w io.Writer)`
 4. 补 `README.md` 的「快速开始」章节——等 `/healthz` 能真正跑起来再写，不许先写成已可用
-5. ✅ golangci-lint 已装（v2.3.1，`~/go/bin/`），`make lint` 已接入 `make check`。
+5. ✅ golangci-lint 已装（v2.14.0，`~/go/bin/`），`make lint` 已接入 `make check`。
    **待办**：`internal/transport/rest/server.go` 实现完成后，删掉 `.golangci.yml` 里针对该文件的
    `unused` 临时豁免（骨架期字段未被引用，实现完就不需要了）
 6. 迁移工具二选一：`golang-migrate` 还是 `goose`（需用户拍板，接数据库前定）

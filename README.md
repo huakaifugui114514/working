@@ -10,7 +10,7 @@ AI Native 企业知识库与 Agent 平台（Go 服务端）。
 
 | 领域 | 选型 |
 |---|---|
-| 语言 | Go 1.23+ |
+| 语言 | Go 1.27+（`go.mod` 声明 `go 1.27.2`，工具链由 GOTOOLCHAIN 自动获取） |
 | HTTP | 标准库 `net/http`（业务 CRUD 阶段引入 gin） |
 | 配置 | YAML（`gopkg.in/yaml.v3`）+ 环境变量覆盖 |
 | 日志 | 标准库 `log/slog`（JSON handler + `trace_id`） |
@@ -38,7 +38,7 @@ docs/        设计与决策记录（ADR / schema / 架构）
 
 ## 本地开发
 
-前置：Go 1.23+。
+前置：Go 1.27+（若本机 Go 较旧，`GOTOOLCHAIN=auto` 会在首次构建时自动下载匹配的工具链）。
 
 ```bash
 make help     # 查看全部工程命令
