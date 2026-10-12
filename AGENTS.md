@@ -202,8 +202,8 @@
   强类型取值集合 `Env`/`LogLevel`/`LogFormat` + `Valid()`；**默认值一致性由 `TestConfigFileMatchesDefaults` 钉死**
 - ✅ `internal/observability`（`dfa886a`）：`NewLogger`（json/text + 级别过滤）、`traceHandler` 自动注入
   `trace_id`、`WithTraceID`/`TraceIDFrom`/`NewTraceID`（16 位十六进制，hex 编码）；7 组单测
-- ⬜ **`internal/transport/rest/middleware`：由用户编写**（agent 曾擅自写完，已于 `revert` 撤回；
-  参考实现放在仓库外 `~/knowflow-plan/reference/middleware.go`，**只看不动手**）
+- ✅ `internal/transport/rest/middleware`（`a702a72`）：**用户实现**了 recorder / RequestID / InFlight /
+  AccessLog 骨架；agent 经明确委派补完 AccessLog 的日志行与 status 兜底、Recover，并补 8 组单测
 - ⬜ 待实现：`rest/server.go`（`routes` / `handleHealthz` / `handleDebugSleep` / `handleNotFound` /
   `Start` / `Shutdown`）、`cmd/apid` 装配
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
@@ -230,8 +230,7 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    仓库级 gh-proxy `insteadOf` 改写已移除，网络不通时可用下面命令恢复：
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
 2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
-3. ✅ config / observability 已完成（agent 写的）；⬜ **middleware 由用户写**（骨架已还原，契约在文件注释里）。
-   之后是 `rest/server.go`（`routes` / `handleHealthz` / `handleDebugSleep` / `handleNotFound` /
+3. ✅ config / observability / middleware 已完成。⬜ 下一个：`rest/server.go`（`routes` / `handleHealthz` / `handleDebugSleep` / `handleNotFound` /
    `Start` / `Shutdown`）与 `cmd/apid` 装配。**`Shutdown` 里的 `context.WithoutCancel` 是关键坑**：
    入参 ctx 已被信号取消，直接拿它做超时会让"等请求处理完"变成"立刻关掉"
 4. 补 `README.md` 的「快速开始」章节——等 `/healthz` 能真正跑起来再写，不许先写成已可用
