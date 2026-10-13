@@ -31,3 +31,13 @@ configs/config.*.local.yaml
 AGENTS.local.md
 CLAUDE.md
 CLAUDE.local.md
+
+# 仓库只放生产项目内容（见 AGENTS.md 开头）。学习练习与个人规划放仓库外：
+#   ~/knowflow-labs/  练习代码     ~/knowflow-plan/  计划书、能力基线、每日日志
+# 这些文件曾误入历史，已用 git filter-branch 清除；下面规则防止再次误提交。
+labs/
+docs/00-baseline.md
+docs/daily-log.md
+docs/README.md
+*.xlsx
+KnowFlow-30天*.md

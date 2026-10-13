@@ -211,6 +211,8 @@
 - ✅ `cmd/apid`（本次提交）：6 步装配（配置 → logger + SetDefault → server → 信号 → 优雅退出）。
   **服务已可真实运行**：`make build && KF_SERVER_ADDR=:18080 ./bin/apid`
 - ✅ `README.md`：已更新为「可运行」状态，含快速开始、真实验收输出、配置与接口说明、实现状态
+- ✅ 历史清理（2026-10-14）：用 `git filter-branch --prune-empty` 清除历史中的 `labs/` 与个人文档，
+  39 → 35 个提交，**最终代码树逐字节未变**（`git diff backup/pre-history-clean main` 为空）
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -229,20 +231,27 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
 
-1. **远端落后本地 37 个提交，尚未推送**（2026-10-14 核对）。推送前置检查已通过：
-   可快进（`git merge-base --is-ancestor origin/main HEAD` 为真，**无需 force**）、
-   范围 diff 无密钥/无仓库外文件、工作区干净。
-   **当前卡点：本机没有可用凭据**（无 `credential.helper`、无 `~/.git-credentials`、
-   无 `GITHUB_TOKEN`/`GH_TOKEN`），实测报错：
-   `fatal: could not read Username for 'https://github.com': terminal prompts disabled`。
-   由用户在自己终端执行 `git push origin main`（Username 填 GitHub 用户名，Password 处粘贴 PAT）；
-   若希望后续由 agent 代推，可先跑 `git config --local credential.helper store` 并手动推一次
-   （注意 `store` 会把 PAT 明文写入 `~/.git-credentials`，需用户自己权衡）。
+1. **远端落后本地 35 个提交，且推送必须 force**（2026-10-14 历史清理后）。
+   原因：已用 `git filter-branch --prune-empty` 从本地历史中清除 `labs/`、个人规划与日志文档，
+   远端 main（`2a7b172`）不再是本地 HEAD 的祖先 → 普通 push 会被拒绝。推送命令：
+   `git push --force-with-lease origin main`
+   （用 `--force-with-lease` 而非 `--force`：远端若有别人的新提交会被拒绝，更安全。**需用户明确同意**。）
+   **当前卡点还有凭据**：本机无 `credential.helper`、无 `~/.git-credentials`、无 `GITHUB_TOKEN`，
+   实测报错 `fatal: could not read Username for 'https://github.com': terminal prompts disabled`。
+   自助推送：`git push --force-with-lease origin main`（Username 填 GitHub 用户名，Password 粘 PAT）；
+   若希望 agent 代推，先 `git config --local credential.helper store` 并手动推一次
+   （`store` 会把 PAT 明文写入 `~/.git-credentials`，需自行权衡）。
    `origin` 已是直连 `https://github.com/huakaifugui114514/working.git`；
-   仓库级 gh-proxy `insteadOf` 改写已移除，网络不通时可用下面命令恢复：
+   gh-proxy 改写已移除，网络不通时可恢复：
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
+2. **历史清理的恢复点与收尾**：本地保留了三处退路——
+   `backup/pre-history-clean`（清理前的完整 39 提交历史）、`refs/original/refs/heads/main`
+   （filter-branch 自动留下的）、以及仓库外的 `~/knowflow-labs`（13 个文件）与
+   `~/knowflow-plan`（7 个文件）——labs 与个人文档的实体在那里。
+   等远端推成功、确认无碍后可回收：
+   `git branch -D backup/pre-history-clean && git update-ref -d refs/original/refs/heads/main && git gc --prune=now`
+   （执行前请确认不再需要回滚。）
 
-2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
 3. ✅ config / observability / middleware / rest / cmd/apid 全部完成，**服务可运行**。
    `README.md` 也已同步为可运行状态。⬜ 下一步：迁移工具选型（golang-migrate / goose）+ 接数据库。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
