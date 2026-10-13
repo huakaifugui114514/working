@@ -236,29 +236,21 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
 
-1. **远端落后本地 35 个提交，且推送必须 force**（2026-10-14 历史清理后）。
-   原因：已用 `git filter-branch --prune-empty` 从本地历史中清除 `labs/`、个人规划与日志文档，
-   远端 main（`2a7b172`）不再是本地 HEAD 的祖先 → 普通 push 会被拒绝。推送命令：
-   `git push --force-with-lease origin main`
-   （用 `--force-with-lease` 而非 `--force`：远端若有别人的新提交会被拒绝，更安全。**需用户明确同意**。）
-   **当前卡点还有凭据**：本机无 `credential.helper`、无 `~/.git-credentials`、无 `GITHUB_TOKEN`，
-   实测报错 `fatal: could not read Username for 'https://github.com': terminal prompts disabled`。
-   自助推送：`git push --force-with-lease origin main`（Username 填 GitHub 用户名，Password 粘 PAT）；
-   若希望 agent 代推，先 `git config --local credential.helper store` 并手动推一次
-   （`store` 会把 PAT 明文写入 `~/.git-credentials`，需自行权衡）。
-   `origin` 已是直连 `https://github.com/huakaifugui114514/working.git`；
-   gh-proxy 改写已移除，网络不通时可恢复：
-   `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
-2. **历史清理的恢复点与收尾**：本地保留了三处退路——
-   `backup/pre-history-clean`（清理前的完整 39 提交历史）、`refs/original/refs/heads/main`
-   （filter-branch 自动留下的）、以及仓库外的 `~/knowflow-labs`（13 个文件）与
-   `~/knowflow-plan`（7 个文件）——labs 与个人文档的实体在那里。
-   等远端推成功、确认无碍后可回收：
+1. ✅ **推送已完成**（2026-10-14）：历史清理成果已推送（用户配好凭据后执行 `--force-with-lease`），
+   随后 agent 补推 3 个提交。核对结果：远端 `main` = 本地 HEAD = `cc58ae0`，40 个提交，
+   根提交为 `5c500cf`，**远端历史中已无 `labs/`、xlsx 与个人文档**。
+   凭据走 `git config credential.helper store`（PAT 明文存 `~/.git-credentials`，用户自行选择的方式）。
+   之后推送：`git push origin main` 即可（已能快进）。
+2. **历史清理的恢复点仍在本地**（可择机回收）：
+   `backup/pre-history-clean`（清理前的完整 39 提交历史）与 `refs/original/refs/heads/main`
+   （filter-branch 自动留下的）。仓库外的 `~/knowflow-labs`(13 文件) 与 `~/knowflow-plan`(7 文件)
+   保存着 labs 与个人文档的实体，**长期保留**。
+   确认无需回滚后可回收：
    `git branch -D backup/pre-history-clean && git update-ref -d refs/original/refs/heads/main && git gc --prune=now`
-   （执行前请确认不再需要回滚。）
 
-3. ✅ config / observability / middleware / rest / cmd/apid 全部完成，**服务可运行**。
-   `README.md` 也已同步为可运行状态。⬜ 下一步：迁移工具选型（golang-migrate / goose）+ 接数据库。
+3. ✅ M1 全部完成（config / observability / middleware / rest / cmd/apid，服务可运行）。
+   ⬜ **M2 下一步**：config 增加 `database` 段（密码只从 env 读）→ 接入 goose（embed.FS）→
+   `migrations/0001_init.sql`（**表结构由用户设计**）→ repository / service / handler。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备
