@@ -215,8 +215,11 @@
   39 → 35 个提交，**最终代码树逐字节未变**（`git diff backup/pre-history-clean main` 为空）
 - ✅ 本地 MySQL 8 编排（`cfa8989`）：`deploy/docker-compose.yml` + 真实健康检查；
   密码走 `deploy/.env`（已 gitignore），仓库只留 `.env.example`。实测 8.4.11 healthy
-- ✅ 迁移工具选型已定（`3098e90`）：**pressly/goose**，理由与代价见 `docs/adr/001-迁移工具选型.md`
-- ⬜ M2 待办：config 增加 `database` 段（密码只从 env 读）→ 接入 goose（embed.FS）→
+- ✅ 迁移工具选型（`3098e90` 选 goose → **同日改选 `golang-migrate`**，见
+  `docs/adr/001-迁移工具选型.md`（已标注被取代）与 `docs/adr/002-迁移工具改选-golang-migrate.md`。
+  改选理由：决策者预期后续有多数据库需求。实测代价：模块图 209 vs 95、go.sum 68 vs 10 行，
+  **但二进制几乎一样（3.9M vs 3.7M）**——成本在供应链面，不在运行时
+- ⬜ M2 待办：config 增加 `database` 段（密码只从 env 读）→ 接入 golang-migrate（`source/iofs`）→
   `migrations/0001_init.sql`（表结构由用户设计）→ repository / service / handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
@@ -256,4 +259,6 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备
 5. ✅ golangci-lint 已装（v2.14.0，`~/go/bin/`），`make lint` 已接入 `make check`；
    server.go 的 `unused` 临时豁免已随实现完成删除（`8592751`）
-6. ✅ 迁移工具已拍板：**goose**（`docs/adr/001-迁移工具选型.md`）。待办：接入 + 首个迁移文件
+6. ✅ 迁移工具已拍板：**`golang-migrate`**（`docs/adr/002-迁移工具改选-golang-migrate.md`）。
+   接入时注意三点：`source/iofs` 构造 embed 源、DSN 多语句需 `multiStatements=true`、
+   失败后版本表进 dirty 需 `Force(version)` 修。待办：接入 + `0001_init.sql`
