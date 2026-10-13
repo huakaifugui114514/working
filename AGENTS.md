@@ -207,7 +207,9 @@
 - ✅ `internal/transport/rest/server.go`（`879e526`）：**用户实现** `New` / `routes` / `handleHealthz` /
   `handleDebugSleep` / `handleNotFound` / `Start` / `Shutdown`；agent 做了一轮检查优化
   （copylocks、边界、日志去重、注释整理）。⬜ 尚无 `server_test.go`
-- ⬜ 待实现：`cmd/apid` 的 6 步装配（下一步），之后补 `README.md` 快速开始
+- ✅ `cmd/apid`（本次提交）：6 步装配（配置 → logger + SetDefault → server → 信号 → 优雅退出）。
+  **服务已可真实运行**：`make build && KF_SERVER_ADDR=:18080 ./bin/apid`
+- ⬜ 待补：`rest/server_test.go`、`README.md` 的「快速开始」章节（现在可以写了）
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -232,11 +234,11 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    仓库级 gh-proxy `insteadOf` 改写已移除，网络不通时可用下面命令恢复：
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
 2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
-3. ✅ config / observability / middleware / rest(server.go) 已完成。⬜ 下一个：`cmd/apid` 的 6 步装配，
-   然后补 `rest/server_test.go`（healthz 200 / 404 码 / d 非法与边界）与 `README.md` 快速开始。
+3. ✅ config / observability / middleware / rest / cmd/apid 全部完成，**服务可运行**。
+   ⬜ 下一步：`rest/server_test.go`（healthz 200 / 404 码 / d 非法与边界）与 `README.md` 快速开始。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
-4. 补 `README.md` 的「快速开始」章节——等 `/healthz` 能真正跑起来再写，不许先写成已可用
+4. ⬜ 补 `README.md` 的「快速开始」章节——`/healthz` 已能真实运行（验收见上一次提交），可以写了
 5. ✅ golangci-lint 已装（v2.14.0，`~/go/bin/`），`make lint` 已接入 `make check`；
    server.go 的 `unused` 临时豁免已随实现完成删除（`23c5083`）
 6. 迁移工具二选一：`golang-migrate` 还是 `goose`（需用户拍板，接数据库前定）
