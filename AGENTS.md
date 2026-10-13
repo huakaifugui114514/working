@@ -70,7 +70,7 @@
 | 配置 | YAML（`gopkg.in/yaml.v3`）+ 环境变量覆盖 | 不用 viper（体积大、行为隐晦） |
 | 日志 | 标准库 `log/slog` + JSON handler | 不引第三方日志库 |
 | 数据库 | MySQL 8 + `database/sql`；确有收益时再上 `sqlc` / `sqlx` | ORM 只在明确收益时引入，且要写 ADR |
-| 迁移 | `golang-migrate` 或 `goose`（二选一，见 §7 待办） | 禁止手改数据库 |
+| 迁移 | **`golang-migrate`**（ADR 002；曾选 goose，同日改选） | 禁止手改数据库 |
 | 缓存 | Redis 7 + `github.com/redis/go-redis/v9` | 用到时再引入 |
 | 测试 | 标准库 `testing` + `github.com/stretchr/testify`（断言） | 表驱动优先 |
 | 代码质量 | `gofmt` + `go vet` + `golangci-lint` + `go test -race` | 见 `Makefile` |
@@ -252,7 +252,7 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    `git branch -D backup/pre-history-clean && git update-ref -d refs/original/refs/heads/main && git gc --prune=now`
 
 3. ✅ M1 全部完成（config / observability / middleware / rest / cmd/apid，服务可运行）。
-   ⬜ **M2 下一步**：config 增加 `database` 段（密码只从 env 读）→ 接入 goose（embed.FS）→
+   ⬜ **M2 下一步**：config 增加 `database` 段（密码只从 env 读）→ 接入 golang-migrate（`source/iofs`）→
    `migrations/0001_init.sql`（**表结构由用户设计**）→ repository / service / handler。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
