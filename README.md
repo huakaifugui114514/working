@@ -14,7 +14,7 @@ AI Native 企业知识库与 Agent 平台（Go 服务端）。
 | HTTP | 标准库 `net/http`（业务 CRUD 阶段引入 gin） |
 | 配置 | YAML（`gopkg.in/yaml.v3`）+ 环境变量覆盖 |
 | 日志 | 标准库 `log/slog`（JSON handler + `trace_id`） |
-| 数据库 | MySQL 8（迁移工具待定：`golang-migrate` / `goose`） |
+| 数据库 | MySQL 8 + `golang-migrate`（迁移工具，见 [ADR 002](docs/adr/002-迁移工具改选-golang-migrate.md)） |
 | 缓存 | Redis 7 |
 | 本地编排 | Docker Compose（`deploy/`） |
 
@@ -121,7 +121,8 @@ docker compose down         # 停（数据保留在卷里）；down -v 连数据
 健康检查用的是**真实查询**（认证 + 选库 + `SELECT 1`）而不是 `mysqladmin ping` ——
 后者在密码错误时也返回 0（实测），那种健康检查等于没做。
 
-数据库迁移工具已定为 [`pressly/goose`](docs/adr/001-迁移工具选型.md)，接入工作在进行中。
+数据库迁移工具已定为 [`golang-migrate`](docs/adr/002-迁移工具改选-golang-migrate.md)
+（曾选 `goose`，同日改选；两次取舍的理由与实测代价都记在 ADR 里）。接入工作在进行中。
 
 ## 配置
 
@@ -208,7 +209,7 @@ ok  internal/transport/rest/respond
 - [x] `cmd/apid` — 装配流程（配置 → 日志 → 服务 → 信号 → 优雅退出）
 - [x] 单元测试与竞态检测门禁 — 6 个包，42 个用例 + 55 个表驱动子用例
 - [x] 本地 MySQL 8 编排（`deploy/docker-compose.yml` + 真实健康检查）
-- [ ] 迁移工具接入（goose，见 [ADR 001](docs/adr/001-迁移工具选型.md)）+ 表结构设计
+- [ ] 迁移工具接入（`golang-migrate`，见 [ADR 002](docs/adr/002-迁移工具改选-golang-migrate.md)）+ 表结构设计
 - [ ] 业务接口（知识库 CRUD / 检索 / Agent）— **M2 进行中**
 
 ## 协作与规范
