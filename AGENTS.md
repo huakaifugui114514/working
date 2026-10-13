@@ -206,10 +206,11 @@
   AccessLog 骨架；agent 经明确委派补完 AccessLog 的日志行与 status 兜底、Recover，并补 8 组单测
 - ✅ `internal/transport/rest/server.go`（`879e526`）：**用户实现** `New` / `routes` / `handleHealthz` /
   `handleDebugSleep` / `handleNotFound` / `Start` / `Shutdown`；agent 做了一轮检查优化
-  （copylocks、边界、日志去重、注释整理）。⬜ 尚无 `server_test.go`
+  （copylocks、边界、日志去重、注释整理）+ `server_test.go`（14 个用例，含优雅退出与边界，
+  经变异测试确认可捕获回归）
 - ✅ `cmd/apid`（本次提交）：6 步装配（配置 → logger + SetDefault → server → 信号 → 优雅退出）。
   **服务已可真实运行**：`make build && KF_SERVER_ADDR=:18080 ./bin/apid`
-- ⬜ 待补：`rest/server_test.go`、`README.md` 的「快速开始」章节（现在可以写了）
+- ⬜ 待补：`README.md` 的「快速开始」章节（服务已可运行，可以写了）
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -235,7 +236,7 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
 2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
 3. ✅ config / observability / middleware / rest / cmd/apid 全部完成，**服务可运行**。
-   ⬜ 下一步：`rest/server_test.go`（healthz 200 / 404 码 / d 非法与边界）与 `README.md` 快速开始。
+   ⬜ 下一步：`README.md` 的「快速开始」章节（唯一欠账）。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ⬜ 补 `README.md` 的「快速开始」章节——`/healthz` 已能真实运行（验收见上一次提交），可以写了
