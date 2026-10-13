@@ -193,18 +193,18 @@
 **当前进度（agent 每次开工前先核对，过时就要更新）**
 
 - 仓库已完成整理：移出学习用的 `labs/` 与个人规划文档，只保留生产项目内容
-- 工程骨架（`29a82c7`）：`cmd/apid`、`internal/{config,apperr,observability,version,transport/rest}`；
+- 工程骨架（`5c500cf`）：`cmd/apid`、`internal/{config,apperr,observability,version,transport/rest}`；
   管道代码 `Makefile`、`configs/config.yaml`、`internal/version` 已就绪
-- ✅ `internal/apperr`（`722f074`）：业务错误与错误码，含表驱动单测
-- ✅ `internal/transport/rest/respond`（`31b3b3d`）：`JSON` / `Error` / `StatusForCode` / `FromError`，
+- ✅ `internal/apperr`（`037f7be`）：业务错误与错误码，含表驱动单测
+- ✅ `internal/transport/rest/respond`（`87e91b4`）：`JSON` / `Error` / `StatusForCode` / `FromError`，
   4xx 回显业务 message、5xx 固定文案且原因只进日志（有测试钉死"响应体不泄露内部信息"）
-- ✅ `internal/config`（`11776e4`）：三层加载（默认值 < YAML < 环境变量）+ `errors.Join` 全量校验；
+- ✅ `internal/config`（`00cf995`）：三层加载（默认值 < YAML < 环境变量）+ `errors.Join` 全量校验；
   强类型取值集合 `Env`/`LogLevel`/`LogFormat` + `Valid()`；**默认值一致性由 `TestConfigFileMatchesDefaults` 钉死**
-- ✅ `internal/observability`（`dfa886a`）：`NewLogger`（json/text + 级别过滤）、`traceHandler` 自动注入
+- ✅ `internal/observability`（`96ab940`）：`NewLogger`（json/text + 级别过滤）、`traceHandler` 自动注入
   `trace_id`、`WithTraceID`/`TraceIDFrom`/`NewTraceID`（16 位十六进制，hex 编码）；7 组单测
-- ✅ `internal/transport/rest/middleware`（`a702a72`）：**用户实现**了 recorder / RequestID / InFlight /
+- ✅ `internal/transport/rest/middleware`（`41de9c1`）：**用户实现**了 recorder / RequestID / InFlight /
   AccessLog 骨架；agent 经明确委派补完 AccessLog 的日志行与 status 兜底、Recover，并补 8 组单测
-- ✅ `internal/transport/rest/server.go`（`879e526`）：**用户实现** `New` / `routes` / `handleHealthz` /
+- ✅ `internal/transport/rest/server.go`（`8c2f448`）：**用户实现** `New` / `routes` / `handleHealthz` /
   `handleDebugSleep` / `handleNotFound` / `Start` / `Shutdown`；agent 做了一轮检查优化
   （copylocks、边界、日志去重、注释整理）+ `server_test.go`（14 个用例，含优雅退出与边界，
   经变异测试确认可捕获回归）
@@ -258,5 +258,5 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备
 5. ✅ golangci-lint 已装（v2.14.0，`~/go/bin/`），`make lint` 已接入 `make check`；
-   server.go 的 `unused` 临时豁免已随实现完成删除（`23c5083`）
+   server.go 的 `unused` 临时豁免已随实现完成删除（`8592751`）
 6. 迁移工具二选一：`golang-migrate` 还是 `goose`（需用户拍板，接数据库前定）
