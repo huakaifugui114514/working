@@ -81,7 +81,14 @@ func run() error {
 		return fmt.Errorf("HTTP 服务异常退出: %w", err)
 
 	case <-ctx.Done():
-		// 收到退出信号。先 stop()：恢复默认信号处理，让第二次 Ctrl+C 能强杀（卡住时的逃生口）；
+		// 收到退出信号。先 stop()：让第二次 Ctrl+C 能立刻强杀（卡住时的逃生口）。
+		// 必须在这里调、不能只靠 defer——defer 要等 Shutdown 返回（最长 shutdown_timeout）
+		// 才执行，而那段时间恰恰是最需要逃生口的时候。
+		//
+		// 注意它恢复的是"进程【启动时】的信号处置"，不是无条件的系统默认：
+		// 若进程启动时 SIGINT 就被忽略（非交互 shell 的后台任务、nohup 会这样），
+		// stop() 之后它仍然是忽略的——所以优雅退出必须依赖 SIGTERM（k8s/docker stop 发的就是它）。
+		//
 		// 再交给 Shutdown 优雅退出——它内部用 context.WithoutCancel 处理了
 		// "信号 ctx 此刻已取消"这个坑。
 		stop()
