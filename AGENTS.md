@@ -229,11 +229,19 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
 
-1. **远端落后本地 18 个提交，用户 2026-10-07 选择「先不推」**。推送需要 GitHub 凭据：
-   `git push origin main` 会提示 Username + Password（Password 处粘贴 PAT，不是账号密码）。
+1. **远端落后本地 37 个提交，尚未推送**（2026-10-14 核对）。推送前置检查已通过：
+   可快进（`git merge-base --is-ancestor origin/main HEAD` 为真，**无需 force**）、
+   范围 diff 无密钥/无仓库外文件、工作区干净。
+   **当前卡点：本机没有可用凭据**（无 `credential.helper`、无 `~/.git-credentials`、
+   无 `GITHUB_TOKEN`/`GH_TOKEN`），实测报错：
+   `fatal: could not read Username for 'https://github.com': terminal prompts disabled`。
+   由用户在自己终端执行 `git push origin main`（Username 填 GitHub 用户名，Password 处粘贴 PAT）；
+   若希望后续由 agent 代推，可先跑 `git config --local credential.helper store` 并手动推一次
+   （注意 `store` 会把 PAT 明文写入 `~/.git-credentials`，需用户自己权衡）。
    `origin` 已是直连 `https://github.com/huakaifugui114514/working.git`；
    仓库级 gh-proxy `insteadOf` 改写已移除，网络不通时可用下面命令恢复：
    `git config url."https://gh-proxy.com/https://github.com/".insteadOf https://github.com/`
+
 2. 远端历史里仍留有已删除的 `labs/` 与个人文档（当前 HEAD 已无）；如需彻底清除历史，需用户明确同意后 force push
 3. ✅ config / observability / middleware / rest / cmd/apid 全部完成，**服务可运行**。
    `README.md` 也已同步为可运行状态。⬜ 下一步：迁移工具选型（golang-migrate / goose）+ 接数据库。
