@@ -100,6 +100,29 @@ curl -s "localhost:18080/debug/sleep?d=3s" &
 - 生产环境（k8s / `docker stop`）发的是 **SIGTERM**，服务同时监听 SIGINT 与 SIGTERM。
 - `/debug/sleep` **只在 `dev` 环境注册**，生产环境该路径返回 404。
 
+## 本地数据库（M2 起）
+
+```bash
+cd deploy
+cp .env.example .env        # 填两个密码（.env 已 gitignore，不会进仓库）
+docker compose up -d
+docker compose ps           # 等 STATE 变成 healthy
+docker compose down         # 停（数据保留在卷里）；down -v 连数据一起删
+```
+
+| 项 | 值 |
+|---|---|
+| 镜像 | `mysql:8.4`（MySQL 8 的 LTS） |
+| 地址 | `127.0.0.1:3306`（可用 `MYSQL_PORT` 改） |
+| 库 / 账号 | `knowflow` / `knowflow`（应用账号，非 root） |
+| 字符集 | `utf8mb4` + `utf8mb4_0900_ai_ci` |
+| 时区 | 固定 `+00:00`（约定：时间一律存 UTC，展示时再转） |
+
+健康检查用的是**真实查询**（认证 + 选库 + `SELECT 1`）而不是 `mysqladmin ping` ——
+后者在密码错误时也返回 0（实测），那种健康检查等于没做。
+
+数据库迁移工具已定为 [`pressly/goose`](docs/adr/001-迁移工具选型.md)，接入工作在进行中。
+
 ## 配置
 
 加载优先级（高者覆盖低者）：**内置默认值 < `configs/config.yaml` < 环境变量（`KF_` 前缀）**。
@@ -184,7 +207,9 @@ ok  internal/transport/rest/respond
 - [x] `internal/transport/rest` — 路由装配、`/healthz`、统一 404、优雅退出
 - [x] `cmd/apid` — 装配流程（配置 → 日志 → 服务 → 信号 → 优雅退出）
 - [x] 单元测试与竞态检测门禁 — 6 个包，42 个用例 + 55 个表驱动子用例
-- [ ] 业务接口（知识库 CRUD / 检索 / Agent）、数据库与迁移 — **M2 起**
+- [x] 本地 MySQL 8 编排（`deploy/docker-compose.yml` + 真实健康检查）
+- [ ] 迁移工具接入（goose，见 [ADR 001](docs/adr/001-迁移工具选型.md)）+ 表结构设计
+- [ ] 业务接口（知识库 CRUD / 检索 / Agent）— **M2 进行中**
 
 ## 协作与规范
 

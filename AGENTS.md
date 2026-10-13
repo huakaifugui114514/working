@@ -213,6 +213,11 @@
 - ✅ `README.md`：已更新为「可运行」状态，含快速开始、真实验收输出、配置与接口说明、实现状态
 - ✅ 历史清理（2026-10-14）：用 `git filter-branch --prune-empty` 清除历史中的 `labs/` 与个人文档，
   39 → 35 个提交，**最终代码树逐字节未变**（`git diff backup/pre-history-clean main` 为空）
+- ✅ 本地 MySQL 8 编排（`cfa8989`）：`deploy/docker-compose.yml` + 真实健康检查；
+  密码走 `deploy/.env`（已 gitignore），仓库只留 `.env.example`。实测 8.4.11 healthy
+- ✅ 迁移工具选型已定（`3098e90`）：**pressly/goose**，理由与代价见 `docs/adr/001-迁移工具选型.md`
+- ⬜ M2 待办：config 增加 `database` 段（密码只从 env 读）→ 接入 goose（embed.FS）→
+  `migrations/0001_init.sql`（表结构由用户设计）→ repository / service / handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -259,4 +264,4 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备
 5. ✅ golangci-lint 已装（v2.14.0，`~/go/bin/`），`make lint` 已接入 `make check`；
    server.go 的 `unused` 临时豁免已随实现完成删除（`8592751`）
-6. 迁移工具二选一：`golang-migrate` 还是 `goose`（需用户拍板，接数据库前定）
+6. ✅ 迁移工具已拍板：**goose**（`docs/adr/001-迁移工具选型.md`）。待办：接入 + 首个迁移文件
