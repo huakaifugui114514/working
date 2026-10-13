@@ -1,0 +1,61 @@
+# 本地开发用的 MySQL。它不是生产部署方案，只解决"本机怎么快速起一个能连、能验证迁移的库"。
+#
+# 用法：
+#   cd deploy && cp .env.example .env && ${EDITOR:-vi} .env   # 填两个密码
+#   docker compose up -d
+#   docker compose ps                      # 等 STATE 变成 healthy
+#   docker compose exec mysql mysql -uknowflow -p -e 'SELECT VERSION()'
+#   docker compose down                    # 停（数据留在卷里）
+#   docker compose down -v                 # 连数据一起删（彻底重置）
+#
+# 为什么密码走 .env 而不是写在这里：AGENTS.md §1.1 —— 密钥只从环境变量读，仓库里只留模板。
+# .env 已被 .gitignore 忽略（见仓库根目录）。docker compose 会自动读取同目录下的 .env。
+
+services:
+  mysql:
+    # 8.4 是 MySQL 8 的 LTS 版本；想更保守可换成 mysql:8.0。
+    # 固定大版本、不写 latest：避免某天拉到一个不兼容的新版本导致"昨天还能跑"。
+    image: mysql:8.4
+    container_name: knowflow-mysql
+    restart: unless-stopped
+
+    environment:
+      # :? 语法 = 变量缺失时直接报错退出，而不是用空密码把库起起来
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 deploy/.env 里设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-knowflow}
+      MYSQL_USER: ${MYSQL_USER:-knowflow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 deploy/.env 里设置 MYSQL_PASSWORD}
+      TZ: UTC
+
+    command:
+      # utf8mb4 才能存完整 CJK 与 emoji（旧的 utf8 是 3 字节，存不下）
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # 时区固定 UTC：与"时间一律存 UTC、展示时再转"的约定一致，
+      # 否则本机时区会悄悄影响 DATETIME 的语义（TIMESTAMP 更严重，它自带时区转换）
+      - --default-time-zone=+00:00
+      # 开发期就把慢 SQL 暴露出来，别等上线
+      - --slow-query-log=1
+      - --long-query-time=0.5
+
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+    healthcheck:
+      # 用真实查询（认证 + 选库 + SELECT 1）而不是 mysqladmin ping：
+      # 官方文档明确说 ping 在 Access denied 时也返回 0，那种健康检查等于没做。
+      test:
+        - CMD-SHELL
+        - mysql -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD -D$$MYSQL_DATABASE -e 'SELECT 1' >/dev/null 2>&1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      # 首次启动要初始化数据目录（几十秒），start_period 内的失败不计入 retries，
+      # 否则容器会在初始化完成前就被判成 unhealthy
+      start_period: 40s
+
+volumes:
+  mysql-data:
