@@ -219,6 +219,11 @@
   `docs/adr/001-迁移工具选型.md`（已标注被取代）与 `docs/adr/002-迁移工具改选-golang-migrate.md`。
   改选理由：决策者预期后续有多数据库需求。实测代价：模块图 209 vs 95、go.sum 68 vs 10 行，
   **但二进制几乎一样（3.9M vs 3.7M）**——成本在供应链面，不在运行时
+- ✅ M2 数据模型决策（用户 2026-10-14 确认）：① **同名不建唯一约束**（软删 + 唯一约束会逼着每条
+  查询都带 `deleted_at` 过滤，而"同名"尚非确定需求；加索引是向后兼容 DDL，随时能补）
+  ② M2 查询清单 7 条（知识库 CRUD + 软删 + 文档关联增删 + 按知识库列文档分页）
+  ③ **同意引入 `github.com/google/uuid`**（用 `NewV7()`，时间有序避免 InnoDB 页分裂）；
+  M2 存储先用 `CHAR(36)`，等有量再迁 `BINARY(16)`
 - ⬜ M2 待办：config 增加 `database` 段（密码只从 env 读）→ 接入 golang-migrate（`source/iofs`）→
   `migrations/0001_init.sql`（表结构由用户设计）→ repository / service / handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
