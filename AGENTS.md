@@ -230,12 +230,11 @@
 - ✅ config 的 `database` 段（`60d7411`）：9 个 `KF_DATABASE_*` env、7 条校验（含 max_idle≤max_open
   跨字段不变量）、密码脱敏（`LogValue`+`String`）、`yaml:"-" json:"-"`；新测试覆盖默认值/env/校验/
   YAML 写 password 被拒/脱敏 3 路径，并经变异测试确认可捕获回归
-- 🟡 `internal/database` 骨架就绪（agent 搭，**用户实现**）：`DSN()` / `MigrateDSN()` / `Open()` 三个函数
-  带完整契约注释 + `panic("TODO(day3)")` 占位；`make check` 绿。实现要点：`mysql.Config.FormatDSN`
-  （禁止手拼）、`parseTime=true`、`loc=UTC`、业务连接 `multiStatements=false` / 迁移串 `true`、
-  错误消息与日志**不得含 DSN/密码**
-- ⬜ M2 待办：实现 `internal/database` 三个函数 + 测试（特殊字符密码往返、multiStatements 开关、
-  parseTime/loc、错误不泄露密码、连接池参数）→ 接入 golang-migrate（`source/iofs`）→
+- ✅ `internal/database`（本次提交）：`DSN()` / `MigrateDSN()` / `Open()` 实现完成。
+  4 个单测 + 1 个集成测试（`//go:build integration`）。踩过并修掉：
+  ① `Open` 误用 `MigrateDSN` → 业务连接开了 multiStatements（集成测试+变异验证可捕获）
+  ② `cfg.LogValue()` 直接当 slog 参数 → `!BADKEY` 键名（vet 也报），改 `slog.Any`
+- ⬜ M2 待办：接入 golang-migrate（`source/iofs`）→
   `migrations/0001_init.sql`（表结构由用户设计）→ repository / service / handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
