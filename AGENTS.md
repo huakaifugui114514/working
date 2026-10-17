@@ -172,6 +172,9 @@
 - ❌ 编造 API、库函数、命令输出、测试结果；**不确定就说不确定，然后去验证**
 - ❌ 修改 `migrations/` 里**已经应用过**的迁移文件（只能追加新迁移）
 - ❌ 在未告知的情况下安装系统级软件、改 shell 配置、改全局 `go env`
+- ❌ 用 `git checkout -- <file>` / `git restore <file>` 去还原**未提交**的文件——它会永久丢掉工作区改动。
+  需要"临时改坏文件做验证"（如变异测试）时，先 `cp` 到 `/tmp` 备份，改完再 `cp` 回来
+  （2026-10-14 踩过：变异测试后用 `git checkout` 还原，把尚未提交的 `Database` 实现全丢了）
 - ❌ 把「用户没问的东西」一次性做大（顺手加个 Redis、顺手接个监控）——先问
 - ❌ 把仓库外的个人文件提交进本仓库
 
@@ -261,7 +264,7 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    `git branch -D backup/pre-history-clean && git update-ref -d refs/original/refs/heads/main && git gc --prune=now`
 
 3. ✅ M1 全部完成（config / observability / middleware / rest / cmd/apid，服务可运行）。
-   ⬜ **M2 下一步**：config 增加 `database` 段（密码只从 env 读）→ 接入 golang-migrate（`source/iofs`）→
+   ⬜ **M2 下一步**：`internal/database`（DSN / MigrateURL）→ 接入 golang-migrate（`source/iofs`）→
    `migrations/0001_init.sql`（**表结构由用户设计**）→ repository / service / handler。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
