@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -42,6 +44,18 @@ const (
 	envServerShutdown = EnvPrefix + "SERVER_SHUTDOWN_TIMEOUT"
 	envLogLevel       = EnvPrefix + "LOG_LEVEL"
 	envLogFormat      = EnvPrefix + "LOG_FORMAT"
+
+	// 数据库相关。注意 password 也在其中——它是**唯一**的来源：
+	// Database.Password 的 yaml tag 是 "-"，配置文件里写它会被 KnownFields 直接拒绝。
+	envDatabaseHost         = EnvPrefix + "DATABASE_HOST"
+	envDatabasePort         = EnvPrefix + "DATABASE_PORT"
+	envDatabaseName         = EnvPrefix + "DATABASE_NAME"
+	envDatabaseUser         = EnvPrefix + "DATABASE_USER"
+	envDatabasePassword     = EnvPrefix + "DATABASE_PASSWORD"
+	envDatabaseMaxOpenConns = EnvPrefix + "DATABASE_MAX_OPEN_CONNS"
+	envDatabaseMaxIdleConns = EnvPrefix + "DATABASE_MAX_IDLE_CONNS"
+	envDatabaseConnLife     = EnvPrefix + "DATABASE_CONN_MAX_LIFETIME"
+	envDatabaseConnIdle     = EnvPrefix + "DATABASE_CONN_MAX_IDLE_TIME"
 )
 
 // Env 是运行环境。
@@ -107,9 +121,10 @@ func (f LogFormat) Valid() bool {
 // 缺了 tag 时 yaml.v3 按字段名小写匹配（ReadTimeout → readtimeout），
 // 而文件里写的是 read_timeout，结果是配置静默失效——值一直是默认值，最难查的一类问题。
 type Config struct {
-	App    App    `yaml:"app"`
-	Server Server `yaml:"server"`
-	Log    Log    `yaml:"log"`
+	App      App      `yaml:"app"`
+	Server   Server   `yaml:"server"`
+	Database Database `yaml:"database"`
+	Log      Log      `yaml:"log"`
 }
 
 // App 是应用级标识。
@@ -134,6 +149,43 @@ type Log struct {
 	Format LogFormat `yaml:"format"`
 }
 
+// Database 是 MySQL 连接参数。
+// 密码只从环境变量读：配置文件会跟着 Git 走遍所有 clone，环境变量不会（AGENTS.md §1.1）。
+type Database struct {
+	Host            string        `yaml:"host"`
+	Port            int           `yaml:"port"`
+	Name            string        `yaml:"name"`
+	User            string        `yaml:"user"`
+	Password        string        `yaml:"-" json:"-"` // ← 关键：不进 YAML，只从 env 读
+	MaxOpenConns    int           `yaml:"max_open_conns"`
+	MaxIdleConns    int           `yaml:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
+}
+
+// LogValue 让结构化日志拿到分组字段（日志平台能按 database.host 检索），
+// 并且密码只暴露为 ***。
+func (d Database) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("host", d.Host),
+		slog.Int("port", d.Port),
+		slog.String("name", d.Name),
+		slog.String("user", d.User),
+		slog.String("password", "***"),
+	)
+}
+
+// String 让 fmt 路径也脱敏：LogValue 覆盖 slog，String 覆盖 fmt.Printf / 错误拼接。
+// 两个都要实现——只实现 LogValue 时，fmt.Printf("%v", d) 会明文打印密码。
+//
+// 注意：fmt.Sprintf("%#v", d) 会绕过 Stringer 打印 Go 语法，这是唯一拦不住的路径；
+// 约定：不要用 %#v 打印配置。
+func (d Database) String() string {
+	// port 是 int，必须用 %d：写成 %s 会输出 "port=%!s(int=3306)"（fmt 的格式错误标记）。
+	return fmt.Sprintf("Database{host=%s port=%d name=%s user=%s password=***}",
+		d.Host, d.Port, d.Name, d.User)
+}
+
 // Default 返回内置默认值，即优先级最低的那一层。
 //
 // 契约：默认值与 configs/config.yaml 必须逐字段一致，由 TestConfigFileMatchesDefaults 钉死。
@@ -150,6 +202,17 @@ func Default() *Config {
 			WriteTimeout:    10 * time.Second,
 			IdleTimeout:     60 * time.Second,
 			ShutdownTimeout: 15 * time.Second,
+		},
+		Database: Database{
+			Host:            "127.0.0.1",
+			Port:            3306,
+			Name:            "knowflow",
+			User:            "knowflow",
+			Password:        "",
+			MaxOpenConns:    10,
+			MaxIdleConns:    5,
+			ConnMaxLifetime: 30 * time.Minute,
+			ConnMaxIdleTime: 5 * time.Minute,
 		},
 		Log: Log{
 			Level:  LogLevelInfo,
@@ -239,6 +302,57 @@ func applyEnv(cfg *Config) error {
 	if v, ok := os.LookupEnv(envLogFormat); ok {
 		cfg.Log.Format = LogFormat(v)
 	}
+
+	// ---- database ----
+	// 每一项都单独解析、单独报错：错误消息点名"哪个变量、什么值、期望什么格式"。
+	if v, ok := os.LookupEnv(envDatabaseHost); ok {
+		cfg.Database.Host = v
+	}
+	if v, ok := os.LookupEnv(envDatabasePort); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法端口（示例：3306）: %w", envDatabasePort, v, err)
+		}
+		cfg.Database.Port = n
+	}
+	if v, ok := os.LookupEnv(envDatabaseName); ok {
+		cfg.Database.Name = v
+	}
+	if v, ok := os.LookupEnv(envDatabaseUser); ok {
+		cfg.Database.User = v
+	}
+	if v, ok := os.LookupEnv(envDatabasePassword); ok {
+		cfg.Database.Password = v
+	}
+	if v, ok := os.LookupEnv(envDatabaseMaxOpenConns); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：10）: %w", envDatabaseMaxOpenConns, v, err)
+		}
+		cfg.Database.MaxOpenConns = n
+	}
+	if v, ok := os.LookupEnv(envDatabaseMaxIdleConns); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：5）: %w", envDatabaseMaxIdleConns, v, err)
+		}
+		cfg.Database.MaxIdleConns = n
+	}
+	if v, ok := os.LookupEnv(envDatabaseConnLife); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：30m）: %w", envDatabaseConnLife, v, err)
+		}
+		cfg.Database.ConnMaxLifetime = d
+	}
+	if v, ok := os.LookupEnv(envDatabaseConnIdle); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：5m）: %w", envDatabaseConnIdle, v, err)
+		}
+		cfg.Database.ConnMaxIdleTime = d
+	}
+
 	return nil
 }
 
@@ -281,6 +395,45 @@ func (c *Config) Validate() error {
 	}
 	if !c.Log.Format.Valid() {
 		errs = append(errs, fmt.Errorf("log.format=%q 非法，只允许 json/text", c.Log.Format))
+	}
+
+	// ---- database ----
+	// 这里只校验"值本身是否合法"，**绝不连库**：Validate 必须是纯函数，
+	// 否则每个引用 config 的单测都得依赖一个跑着的 MySQL。
+	// 也刻意不校验 Password 是否为空——那是部署环境的事（本地可能用 socket 认证、云上可能用 IAM），
+	// 把它设成必填只会逼着所有不连库的测试去设环境变量。
+	if c.Database.Host == "" {
+		errs = append(errs, errors.New("database.host 不能为空"))
+	}
+	if c.Database.Port < 1 || c.Database.Port > 65535 {
+		errs = append(errs, fmt.Errorf("database.port 必须在 1~65535 之间，当前 %d", c.Database.Port))
+	}
+	if c.Database.Name == "" {
+		errs = append(errs, errors.New("database.name 不能为空"))
+	}
+	if c.Database.User == "" {
+		errs = append(errs, errors.New("database.user 不能为空"))
+	}
+	if c.Database.MaxOpenConns < 1 {
+		errs = append(errs, fmt.Errorf("database.max_open_conns 必须 ≥ 1，当前 %d", c.Database.MaxOpenConns))
+	}
+	// 跨字段不变量：单看每一项都合法，组合起来才错——只有这一层能拦。
+	// 注意只在 max_open_conns 自身合法时才比：否则 max_open=0 会连带报出
+	// "idle > open" 这条衍生错误，使用者得先分辨哪个才是根因。
+	if c.Database.MaxIdleConns < 0 {
+		errs = append(errs, fmt.Errorf("database.max_idle_conns 不能为负数，当前 %d", c.Database.MaxIdleConns))
+	} else if c.Database.MaxOpenConns >= 1 && c.Database.MaxIdleConns > c.Database.MaxOpenConns {
+		errs = append(errs, fmt.Errorf("database.max_idle_conns(%d) 不能大于 max_open_conns(%d)",
+			c.Database.MaxIdleConns, c.Database.MaxOpenConns))
+	}
+	// 0 在 database/sql 里是合法语义（不限制寿命），所以只拦负数
+	if c.Database.ConnMaxLifetime < 0 {
+		errs = append(errs, fmt.Errorf("database.conn_max_lifetime 不能为负数（0 表示不限制），当前 %s",
+			c.Database.ConnMaxLifetime))
+	}
+	if c.Database.ConnMaxIdleTime < 0 {
+		errs = append(errs, fmt.Errorf("database.conn_max_idle_time 不能为负数（0 表示不限制），当前 %s",
+			c.Database.ConnMaxIdleTime))
 	}
 
 	// 注意：这里必须显式判空再 return nil。

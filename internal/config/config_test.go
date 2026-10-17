@@ -1,6 +1,9 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,7 +28,11 @@ func writeTemp(t *testing.T, content string) string {
 // 如果开发者的 shell 里恰好设了 KF_LOG_LEVEL，测试结果就取决于机器——那不是测试，是抽奖。
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{envAppEnv, envServerAddr, envServerShutdown, envLogLevel, envLogFormat} {
+	for _, key := range []string{
+		envAppEnv, envServerAddr, envServerShutdown, envLogLevel, envLogFormat,
+		envDatabaseHost, envDatabasePort, envDatabaseName, envDatabaseUser, envDatabasePassword,
+		envDatabaseMaxOpenConns, envDatabaseMaxIdleConns, envDatabaseConnLife, envDatabaseConnIdle,
+	} {
 		old, existed := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatalf("清除环境变量 %s 失败: %v", key, err)
@@ -256,6 +263,11 @@ func TestValidateCollectsAllProblems(t *testing.T) {
 		"server.shutdown_timeout",
 		"log.level",
 		"log.format",
+		"database.host",
+		"database.port",
+		"database.name",
+		"database.user",
+		"database.max_open_conns",
 	}
 	for _, field := range want {
 		if !strings.Contains(err.Error(), field) {
@@ -268,5 +280,218 @@ func TestValidateCollectsAllProblems(t *testing.T) {
 func TestValidConfigPasses(t *testing.T) {
 	if err := Default().Validate(); err != nil {
 		t.Errorf("Default() 应当通过校验，实际: %v", err)
+	}
+}
+
+// ---- Database 相关 ----
+
+// TestDefaultDatabaseValues 单独钉住默认值本身。
+// 为什么不能只靠 TestConfigFileMatchesDefaults：那条只保证"YAML 与 Default() 一致"。
+// 如果有人把 port 从 3306 改成 3307 并同步改了 YAML，它照样绿——默认值已经错了却没人发现。
+func TestDefaultDatabaseValues(t *testing.T) {
+	db := Default().Database
+
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"host", db.Host, "127.0.0.1"},
+		{"port", db.Port, 3306},
+		{"name", db.Name, "knowflow"},
+		{"user", db.User, "knowflow"},
+		{"password", db.Password, ""}, // 默认必须为空：密钥只能从环境变量来
+		{"max_open_conns", db.MaxOpenConns, 10},
+		{"max_idle_conns", db.MaxIdleConns, 5},
+		{"conn_max_lifetime", db.ConnMaxLifetime, 30 * time.Minute},
+		{"conn_max_idle_time", db.ConnMaxIdleTime, 5 * time.Minute},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("database.%s = %v, want %v", tt.name, tt.got, tt.want)
+		}
+	}
+}
+
+// TestDatabaseEnvOverrides 验证 9 个 KF_DATABASE_* 变量都能覆盖默认值。
+func TestDatabaseEnvOverrides(t *testing.T) {
+	clearEnv(t)
+
+	t.Setenv(envDatabaseHost, "db.internal")
+	t.Setenv(envDatabasePort, "13306")
+	t.Setenv(envDatabaseName, "kb")
+	t.Setenv(envDatabaseUser, "svc")
+	t.Setenv(envDatabasePassword, "from-env")
+	t.Setenv(envDatabaseMaxOpenConns, "50")
+	t.Setenv(envDatabaseMaxIdleConns, "20")
+	t.Setenv(envDatabaseConnLife, "45m")
+	t.Setenv(envDatabaseConnIdle, "3m")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+
+	db := cfg.Database
+	if db.Host != "db.internal" || db.Port != 13306 || db.Name != "kb" || db.User != "svc" {
+		t.Errorf("字符串/整数覆盖失败: %+v", db)
+	}
+	if db.Password != "from-env" {
+		t.Error("KF_DATABASE_PASSWORD 应覆盖 password（这是密码的唯一来源）")
+	}
+	if db.MaxOpenConns != 50 || db.MaxIdleConns != 20 {
+		t.Errorf("连接池覆盖失败: open=%d idle=%d", db.MaxOpenConns, db.MaxIdleConns)
+	}
+	if db.ConnMaxLifetime != 45*time.Minute || db.ConnMaxIdleTime != 3*time.Minute {
+		t.Errorf("时长覆盖失败: lifetime=%s idle=%s", db.ConnMaxLifetime, db.ConnMaxIdleTime)
+	}
+}
+
+// TestDatabaseEnvParseErrors 钉住"解析失败要说清楚是哪个变量、什么值"。
+func TestDatabaseEnvParseErrors(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{envDatabasePort, "abc"},
+		{envDatabaseMaxOpenConns, "十"},
+		{envDatabaseMaxIdleConns, "3.5"},
+		{envDatabaseConnLife, "30"},  // 缺单位
+		{envDatabaseConnIdle, "5分钟"}, // 单位不合法
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			_, err := Load("")
+			if err == nil {
+				t.Fatalf("%s=%q 应当报错", tt.key, tt.value)
+			}
+			if !strings.Contains(err.Error(), tt.key) {
+				t.Errorf("错误信息里应包含变量名 %s，实际: %v", tt.key, err)
+			}
+			if !strings.Contains(err.Error(), tt.value) {
+				t.Errorf("错误信息里应包含非法值 %q，实际: %v", tt.value, err)
+			}
+		})
+	}
+}
+
+// TestValidateDatabase 覆盖 Database 的每条规则与边界。
+func TestValidateDatabase(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string // 空表示应当通过
+	}{
+		{name: "默认值合法", mutate: func(*Config) {}},
+		{name: "port 下边界 1", mutate: func(c *Config) { c.Database.Port = 1 }},
+		{name: "port 上边界 65535", mutate: func(c *Config) { c.Database.Port = 65535 }},
+		{name: "max_idle 等于 max_open", mutate: func(c *Config) {
+			c.Database.MaxOpenConns = 10
+			c.Database.MaxIdleConns = 10
+		}},
+		{name: "conn_max_lifetime 为 0（database/sql 语义：不限制）", mutate: func(c *Config) {
+			c.Database.ConnMaxLifetime = 0
+		}},
+		{name: "password 为空不报错（刻意不校验）", mutate: func(c *Config) { c.Database.Password = "" }},
+
+		{name: "host 为空", mutate: func(c *Config) { c.Database.Host = "" }, wantErr: "database.host"},
+		{name: "port 为 0", mutate: func(c *Config) { c.Database.Port = 0 }, wantErr: "database.port"},
+		{name: "port 超过 65535", mutate: func(c *Config) { c.Database.Port = 65536 }, wantErr: "database.port"},
+		{name: "name 为空", mutate: func(c *Config) { c.Database.Name = "" }, wantErr: "database.name"},
+		{name: "user 为空", mutate: func(c *Config) { c.Database.User = "" }, wantErr: "database.user"},
+		{name: "max_open_conns 为 0", mutate: func(c *Config) { c.Database.MaxOpenConns = 0 }, wantErr: "database.max_open_conns"},
+		{name: "max_idle 为负", mutate: func(c *Config) { c.Database.MaxIdleConns = -1 }, wantErr: "database.max_idle_conns"},
+		{name: "max_idle 大于 max_open", mutate: func(c *Config) {
+			c.Database.MaxOpenConns = 5
+			c.Database.MaxIdleConns = 10
+		}, wantErr: "database.max_idle_conns"},
+		{name: "conn_max_lifetime 为负", mutate: func(c *Config) {
+			c.Database.ConnMaxLifetime = -time.Second
+		}, wantErr: "database.conn_max_lifetime"},
+		{name: "conn_max_idle_time 为负", mutate: func(c *Config) {
+			c.Database.ConnMaxIdleTime = -time.Second
+		}, wantErr: "database.conn_max_idle_time"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(cfg)
+
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("期望通过校验，实际: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("期望报错（应包含 %q），实际为 nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("错误信息应包含 %q，实际: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestDatabasePasswordRejectedInYAML：密码只允许来自环境变量。
+// 配置文件里写 password 必须被 KnownFields 拒绝——否则它会静默失效或意外生效。
+func TestDatabasePasswordRejectedInYAML(t *testing.T) {
+	clearEnv(t)
+
+	path := writeTemp(t, "database:\n  password: written-in-file\n")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("YAML 里出现 password 应当报错")
+	}
+	if !strings.Contains(err.Error(), "password") {
+		t.Errorf("错误信息应提到 password，实际: %v", err)
+	}
+}
+
+// TestDatabaseRedaction 钉住三条泄露路径：fmt %v、fmt %+v、slog。
+func TestDatabaseRedaction(t *testing.T) {
+	const secret = "SuperSecret123!" // 固定假值：失败信息里也不会出现真密码
+
+	cfg := Default()
+	cfg.Database.Password = secret
+
+	t.Run("fmt %v", func(t *testing.T) {
+		assertRedacted(t, fmt.Sprintf("%v", cfg.Database), secret)
+	})
+
+	t.Run("fmt %+v 整个 Config", func(t *testing.T) {
+		assertRedacted(t, fmt.Sprintf("%+v", *cfg), secret)
+	})
+
+	t.Run("slog 结构化日志", func(t *testing.T) {
+		var buf bytes.Buffer
+		slog.New(slog.NewTextHandler(&buf, nil)).Info("配置已加载", "database", cfg.Database)
+
+		out := buf.String()
+		assertRedacted(t, out, secret)
+		// LogValue 的价值：日志平台能按字段检索，而不是拿到一坨格式化字符串
+		if !strings.Contains(out, "database.password=***") {
+			t.Errorf("slog 输出应是结构化分组且 password=***，实际: %s", out)
+		}
+	})
+}
+
+// assertRedacted 断言输出既不含明文密码，也不含 fmt 的格式错误标记（如 %!s(int=3306)）。
+func assertRedacted(t *testing.T, out, secret string) {
+	t.Helper()
+	if strings.Contains(out, secret) {
+		t.Errorf("输出泄露了明文密码: %s", out)
+	}
+	if strings.Contains(out, "%!") {
+		t.Errorf("输出里有 fmt 格式错误标记（多半是 %%s 配了非字符串）: %s", out)
+	}
+	if !strings.Contains(out, "***") {
+		t.Errorf("输出里应有脱敏标记 ***，实际: %s", out)
 	}
 }

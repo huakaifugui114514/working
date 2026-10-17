@@ -15,6 +15,19 @@ server:
   idle_timeout: 60s # keep-alive 空闲连接保持多久
   shutdown_timeout: 15s # 优雅退出时，最多等在途请求多久（超时则强制关）
 
+database:
+  host: "127.0.0.1" # 本地 docker compose 起的 MySQL；生产用 KF_DATABASE_HOST 覆盖
+  port: 3306 # 与 deploy/.env 的 MYSQL_PORT 对应
+  name: knowflow # 库名（deploy/.env 的 MYSQL_DATABASE）
+  user: knowflow # 应用账号，刻意不用 root（deploy/.env 的 MYSQL_USER）
+  # password 刻意不写在这里：它只从 KF_DATABASE_PASSWORD 读。
+  # 配置文件会跟着 Git 走遍所有 clone，环境变量不会（AGENTS.md §1.1）。
+  # 顺带：真往这里写 password 会被 KnownFields(true) 直接拒绝启动。
+  max_open_conns: 10 # 连接池上限；MySQL 默认 max_connections=151，要留余量给运维连接
+  max_idle_conns: 5 # 空闲连接数，必须 ≤ max_open_conns
+  conn_max_lifetime: 30m # 必须 < MySQL wait_timeout（默认 8h），否则会捡到已被服务端关闭的连接
+  conn_max_idle_time: 5m # 空闲连接多久归还给 MySQL
+
 log:
   level: info # debug / info / warn / error
   format: json # json（线上，便于按字段检索）/ text（本地肉眼读）
