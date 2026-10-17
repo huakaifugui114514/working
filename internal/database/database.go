@@ -11,8 +11,13 @@ package database
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
+	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/huakaifugui114514/working/internal/config"
 )
 
@@ -27,7 +32,7 @@ import (
 //   - loc=UTC（约定：时间一律存 UTC，展示时再转）
 //   - Timeout 设一个拨号上限（如 3s），否则连不上时会挂很久
 func DSN(cfg config.Database) string {
-	panic("TODO(day3): 实现业务连接的 DSN 拼装")
+	return buildDSN(cfg, false)
 }
 
 // MigrateDSN 生成迁移专用连接串：参数与 DSN 相同，但 multiStatements=true。
@@ -35,7 +40,7 @@ func DSN(cfg config.Database) string {
 // 为什么迁移必须开：一个迁移文件里常有多条 DDL；golang-migrate 的官方 README
 // 明确要求复用连接时带 multiStatements=true。
 func MigrateDSN(cfg config.Database) string {
-	panic("TODO(day3): 实现迁移连接的 DSN 拼装")
+	return buildDSN(cfg, true)
 }
 
 // Open 打开业务连接池，并用 Ping 验证连通性。
@@ -48,5 +53,40 @@ func MigrateDSN(cfg config.Database) string {
 //     错误消息只带 host/port/name/user 这类可公开字段
 //   - Ping 失败时要先 db.Close() 再返回 error，否则连接池泄漏
 func Open(ctx context.Context, cfg config.Database, logger *slog.Logger) (*sql.DB, error) {
-	panic("TODO(day3): 实现连接池打开与连通性校验")
+	// 业务连接必须用 DSN：MigrateDSN 开了 multiStatements，只给迁移用
+	db, err := sql.Open("mysql", DSN(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("打开数据库连接池失败（host=%s port=%d db=%s user=%s）: %w",
+			cfg.Host, cfg.Port, cfg.Name, cfg.User, err)
+	}
+	db.SetMaxOpenConns(cfg.MaxOpenConns)
+	db.SetMaxIdleConns(cfg.MaxIdleConns)
+	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
+
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("连接数据库失败（host=%s port=%d db=%s user=%s）: %w",
+			cfg.Host, cfg.Port, cfg.Name, cfg.User, err)
+	}
+
+	logger.DebugContext(ctx, "open database successfully", slog.Any("database", cfg))
+
+	return db, nil
+}
+
+// buildDSN 是两个公开构造函数共用的实现：只差 multiStatements 一个开关。
+func buildDSN(cfg config.Database, allowMultiStatements bool) string {
+	c := mysql.NewConfig()
+	c.User, c.Passwd = cfg.User, cfg.Password
+	c.Net = "tcp"
+	c.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	c.DBName = cfg.Name
+	c.ParseTime = true
+	c.Loc = time.UTC
+	c.Timeout = 3 * time.Second
+	c.MultiStatements = allowMultiStatements
+	return c.FormatDSN()
 }
