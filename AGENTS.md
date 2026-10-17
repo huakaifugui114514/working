@@ -224,8 +224,12 @@
   ② M2 查询清单 7 条（知识库 CRUD + 软删 + 文档关联增删 + 按知识库列文档分页）
   ③ **同意引入 `github.com/google/uuid`**（用 `NewV7()`，时间有序避免 InnoDB 页分裂）；
   M2 存储先用 `CHAR(36)`，等有量再迁 `BINARY(16)`
-- ⬜ M2 待办：config 增加 `database` 段（密码只从 env 读）→ 接入 golang-migrate（`source/iofs`）→
-  `migrations/0001_init.sql`（表结构由用户设计）→ repository / service / handler
+- ✅ config 的 `database` 段（`60d7411`）：9 个 `KF_DATABASE_*` env、7 条校验（含 max_idle≤max_open
+  跨字段不变量）、密码脱敏（`LogValue`+`String`）、`yaml:"-" json:"-"`；新测试覆盖默认值/env/校验/
+  YAML 写 password 被拒/脱敏 3 路径，并经变异测试确认可捕获回归
+- ⬜ M2 待办：`internal/database`（`DSN()` 业务连接 / `MigrateURL()` 迁移连接，用 `mysql.Config.FormatDSN`，
+  禁止手拼）→ 接入 golang-migrate（`source/iofs`）→ `migrations/0001_init.sql`（表结构由用户设计）→
+  repository / service / handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
