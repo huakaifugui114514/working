@@ -241,8 +241,13 @@
   4 个单测 + 1 个集成测试（`//go:build integration`）。踩过并修掉：
   ① `Open` 误用 `MigrateDSN` → 业务连接开了 multiStatements（集成测试+变异验证可捕获）
   ② `cfg.LogValue()` 直接当 slog 参数 → `!BADKEY` 键名（vet 也报），改 `slog.Any`
-- ⬜ M2 待办：接入 golang-migrate（`source/iofs`）→
-  `migrations/0001_init.sql`（表结构由用户设计）→ repository / service / handler
+- ✅ `migrations/0001_init.{up,down}.sql`（agent 代写，用户委派）：collections / documents /
+  collection_documents 三张表，BINARY(16) 主键、DATETIME(3) 存 UTC、软删、无外键、keyset 索引。
+  已在真实 MySQL 8.4 上用临时表验证：索引列序正确；"某知识库下文档"的 keyset+JOIN 走
+  `idx_collection_created` 覆盖索引（`Using index`，无回表）+ `eq_ref` 关联，无 filesort。
+  ⚠️ 文件名必须是 `{版本}_{描述}.up.sql` —— 不匹配的会被 migrate **静默跳过**
+- ⬜ M2 待办：接入 golang-migrate（`source/iofs` + `mysql.WithInstance`）→
+  `cmd/migrate` → repository / service / handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
