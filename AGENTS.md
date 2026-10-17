@@ -225,8 +225,15 @@
 - ✅ M2 数据模型决策（用户 2026-10-14 确认）：① **同名不建唯一约束**（软删 + 唯一约束会逼着每条
   查询都带 `deleted_at` 过滤，而"同名"尚非确定需求；加索引是向后兼容 DDL，随时能补）
   ② M2 查询清单 7 条（知识库 CRUD + 软删 + 文档关联增删 + 按知识库列文档分页）
-  ③ **同意引入 `github.com/google/uuid`**（用 `NewV7()`，时间有序避免 InnoDB 页分裂）；
-  M2 存储先用 `CHAR(36)`，等有量再迁 `BINARY(16)`
+  ③ **同意引入 `github.com/google/uuid`**（用 `NewV7()`，时间有序避免 InnoDB 页分裂）
+  ④ **主键定 `BINARY(16)`**（2026-10-14 拍板，推翻早先的 `CHAR(36)`）：按"数据极限多"的假设，
+  InnoDB 二级索引叶子都存主键，CHAR(36) 每条多 36 字节（10 亿行 × 3 索引 ≈ 多 100GB）；
+  且大表上 CHAR→BINARY 是重建表+全部索引的不可逆 DDL，不能"以后再迁"
+  ⑤ **分页定 keyset**（不用 OFFSET）：游标为 `(created_at, id)` 复合；SQL 必须写**展开形式**
+  `created_at < ? OR (created_at = ? AND id < ?)` —— 实测行构造器 `(a,b) < (?,?)` 会退化成
+  `type=index` 全索引扫描（靠 LIMIT 提前停），而展开形式是 `type=range`；对照 OFFSET 4000 要扫 4020 行
+  ⑥ **不加外键**（大厂惯例）：FK 的写入放大/跨分片不可行/大表 DDL 灾难；一致性靠 repository 校验 + 对账
+  ⑦ M2 字段全上：collections(description)、documents(source_uri/mime_type/size_bytes)
 - ✅ config 的 `database` 段（`60d7411`）：9 个 `KF_DATABASE_*` env、7 条校验（含 max_idle≤max_open
   跨字段不变量）、密码脱敏（`LogValue`+`String`）、`yaml:"-" json:"-"`；新测试覆盖默认值/env/校验/
   YAML 写 password 被拒/脱敏 3 路径，并经变异测试确认可捕获回归
