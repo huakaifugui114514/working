@@ -250,7 +250,10 @@
   （up / version / down -y / force <n>；`iofs` + `mysql.WithInstance`，迁移连接用 `MigrateDSN`）。
   实测：up → version=1；再 up → 无需迁移；down -y → 只剩 schema_migrations；再 up 恢复；
   人为 dirty=1 → version 报错退出 → force 1 修复。`migrations/embed_test.go` 钉住文件名规则
-- ⬜ M2 待办：repository 层（用户写）→ service → handler
+- 🟡 repository 契约与骨架（`internal/knowledge`，**用户实现**）：model.go（Collection/Cursor/PATCH 语义的
+  CollectionUpdate/ErrNotFound）、repository.go（接口）、mysql.go（5 个方法 + `panic` 占位 + 实现提示）。
+  M2 先只做 collections：Create / Get / List（keyset）/ Update（PATCH）/ SoftDelete
+- ⬜ M2 待办：实现 repository 5 个方法 + 集成测试 → service → handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
