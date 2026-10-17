@@ -246,8 +246,11 @@
   已在真实 MySQL 8.4 上用临时表验证：索引列序正确；"某知识库下文档"的 keyset+JOIN 走
   `idx_collection_created` 覆盖索引（`Using index`，无回表）+ `eq_ref` 关联，无 filesort。
   ⚠️ 文件名必须是 `{版本}_{描述}.up.sql` —— 不匹配的会被 migrate **静默跳过**
-- ⬜ M2 待办：接入 golang-migrate（`source/iofs` + `mysql.WithInstance`）→
-  `cmd/migrate` → repository / service / handler
+- ✅ 迁移接入（`40b8c1c`）：`migrations/embed.go`（`//go:embed *.sql`）+ `cmd/migrate`
+  （up / version / down -y / force <n>；`iofs` + `mysql.WithInstance`，迁移连接用 `MigrateDSN`）。
+  实测：up → version=1；再 up → 无需迁移；down -y → 只剩 schema_migrations；再 up 恢复；
+  人为 dirty=1 → version 报错退出 → force 1 修复。`migrations/embed_test.go` 钉住文件名规则
+- ⬜ M2 待办：repository 层（用户写）→ service → handler
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
