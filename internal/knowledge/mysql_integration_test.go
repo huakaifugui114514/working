@@ -26,8 +26,8 @@ import (
 //	KF_DATABASE_PASSWORD=$MYSQL_PASSWORD \
 //		go test -tags=integration -count=1 -v ./internal/knowledge/
 //
-// 每个测试用一条固定连接，在会话里建同名 TEMPORARY TABLE collections。
-// 临时表会遮蔽真实表，测试结束连接关闭后自动消失，不会碰真实数据。
+// 每个测试用一条固定连接，在会话里建同名 TEMPORARY TABLE collections / documents /
+// collection_documents。临时表会遮蔽真实表，测试结束连接关闭后自动消失，不会碰真实数据。
 const createTempCollectionsTable = `
 CREATE TEMPORARY TABLE collections (
     id          BINARY(16)    NOT NULL,
@@ -38,6 +38,34 @@ CREATE TEMPORARY TABLE collections (
     deleted_at  DATETIME(3)       NULL DEFAULT NULL,
     PRIMARY KEY (id),
     KEY idx_created_id (created_at, id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci`
+
+const createTempDocumentsTable = `
+CREATE TEMPORARY TABLE documents (
+    id          BINARY(16)    NOT NULL,
+    title       VARCHAR(512)  NOT NULL,
+    source_uri  VARCHAR(2048)     NULL,
+    mime_type   VARCHAR(128)      NULL,
+    size_bytes  BIGINT UNSIGNED   NULL,
+    created_at  DATETIME(3)   NOT NULL,
+    updated_at  DATETIME(3)   NOT NULL,
+    deleted_at  DATETIME(3)       NULL DEFAULT NULL,
+    PRIMARY KEY (id),
+    KEY idx_created_id (created_at, id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci`
+
+const createTempCollectionDocumentsTable = `
+CREATE TEMPORARY TABLE collection_documents (
+    collection_id BINARY(16)  NOT NULL,
+    document_id   BINARY(16)  NOT NULL,
+    created_at    DATETIME(3) NOT NULL,
+    PRIMARY KEY (collection_id, document_id),
+    KEY idx_document (document_id),
+    KEY idx_collection_created (collection_id, created_at, document_id)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_0900_ai_ci`
@@ -65,6 +93,12 @@ func newIntegrationRepo(t *testing.T) (*MySQLRepository, *sql.Conn) {
 	if _, err := conn.ExecContext(context.Background(), createTempCollectionsTable); err != nil {
 		t.Fatalf("创建临时 collections 表失败: %v", err)
 	}
+	if _, err := conn.ExecContext(context.Background(), createTempDocumentsTable); err != nil {
+		t.Fatalf("创建临时 documents 表失败: %v", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), createTempCollectionDocumentsTable); err != nil {
+		t.Fatalf("创建临时 collection_documents 表失败: %v", err)
+	}
 	return &MySQLRepository{db: conn}, conn
 }
 
@@ -84,6 +118,42 @@ func insertTestCollection(
 		id[:], name, description, createdAt, createdAt, deletedAt)
 	if err != nil {
 		t.Fatalf("插入测试 collection 失败: %v", err)
+	}
+}
+
+func insertTestDocument(
+	t *testing.T,
+	conn *sql.Conn,
+	id uuid.UUID,
+	title string,
+	sourceURI, mimeType any,
+	sizeBytes any,
+	createdAt time.Time,
+	deletedAt *time.Time,
+) {
+	t.Helper()
+	_, err := conn.ExecContext(context.Background(),
+		`INSERT INTO documents (id, title, source_uri, mime_type, size_bytes, created_at, updated_at, deleted_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id[:], title, sourceURI, mimeType, sizeBytes, createdAt, createdAt, deletedAt)
+	if err != nil {
+		t.Fatalf("插入测试 document 失败: %v", err)
+	}
+}
+
+func insertTestCollectionDocument(
+	t *testing.T,
+	conn *sql.Conn,
+	collectionID, documentID uuid.UUID,
+	addedAt time.Time,
+) {
+	t.Helper()
+	_, err := conn.ExecContext(context.Background(),
+		`INSERT INTO collection_documents (collection_id, document_id, created_at)
+		 VALUES (?, ?, ?)`,
+		collectionID[:], documentID[:], addedAt)
+	if err != nil {
+		t.Fatalf("插入测试 collection_document 失败: %v", err)
 	}
 }
 
