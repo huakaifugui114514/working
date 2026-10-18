@@ -123,8 +123,7 @@ const traceIDBytes = 8
 //
 //	net/http: HTTP/1.x transport connection broken: malformed MIME header line
 //
-// 用 crypto/rand 而不是 math/rand：这个 id 会出现在响应头里，可预测的 id 能被枚举
-// （以后做幂等键时更关键）。
+// 用 crypto/rand 而不是 math/rand：这个 id 会出现在响应头里，可预测的 id 能被枚举。
 //
 // 失败时返回 error 而不是内部降级：熵源故障是环境级问题，由调用方决定怎么办。
 // 调用方注意：不该因为生成失败就让请求失败——合理做法是记一条日志，然后不带 trace_id 继续。

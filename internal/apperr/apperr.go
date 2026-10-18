@@ -1,6 +1,6 @@
 // Package apperr 定义业务错误与错误码。
 //
-// 为什么需要它：Day 4 的 CRUD 里必然出现三类错误——参数不合法(400)、资源不存在(404)、
+// 为什么需要它：知识库 CRUD 必然出现三类错误——参数不合法(400)、资源不存在(404)、
 // 内部故障(500)。没有统一类型就会变成：
 //   - 每个 handler 重复写 if errors.Is(err, sql.ErrNoRows) {...}
 //   - 错误码字符串漂移（not_found / notFound / NotFound 迟早混用）
@@ -18,7 +18,7 @@ import (
 const (
 	CodeInvalidArgument = "invalid_argument" // → 400
 	CodeNotFound        = "not_found"        // → 404，资源不存在
-	CodeConflict        = "conflict"         // → 409（Day 4+ 用得上再删/留）
+	CodeConflict        = "conflict"         // → 409，预留：并发/唯一性冲突
 	CodeInternal        = "internal_error"   // → 500，兜底
 )
 

@@ -56,8 +56,7 @@ func (r *recorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// Unwrap 让 http.ResponseController 能拿到底层 ResponseWriter（Flush / Hijack / SetWriteDeadline），
-// 将来做 SSE 流式输出会用到。
+// Unwrap 让 http.ResponseController 能拿到底层 ResponseWriter（Flush / Hijack / SetWriteDeadline）。
 func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // RequestID 为每个请求确定一个 trace_id：优先沿用上游传来的（合法时），没有就新生成。

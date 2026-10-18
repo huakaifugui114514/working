@@ -5,7 +5,7 @@
 //
 // 本包只做连接管理，不写业务 SQL —— 业务 SQL 属于 repository。
 //
-// 依赖（实现时需要，按 AGENTS.md §2.2 已获批）：github.com/go-sql-driver/mysql
+// 依赖：github.com/go-sql-driver/mysql（官方 MySQL 驱动；SQL 保持显式，不引 ORM）
 package database
 
 import (

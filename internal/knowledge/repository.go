@@ -9,7 +9,7 @@ import (
 // Repository 是知识库的持久化接口。
 //
 // 为什么定义在这里、而不是躺在 mysql.go 里：接口应当由**使用方**（service）定义，
-// 这样 service 的单测可以注入 fake，完全不需要连数据库（AGENTS.md §1.2.3）。
+// 这样 service 的单测可以注入 fake，完全不需要连数据库。
 //
 // 全局约定：
 //   - 每个方法都带 ctx，并在内部使用 QueryContext / ExecContext / QueryRowContext

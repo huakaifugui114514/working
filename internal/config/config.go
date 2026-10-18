@@ -150,7 +150,7 @@ type Log struct {
 }
 
 // Database 是 MySQL 连接参数。
-// 密码只从环境变量读：配置文件会跟着 Git 走遍所有 clone，环境变量不会（AGENTS.md §1.1）。
+// 密码只从环境变量读：配置文件会跟着 Git 走遍所有 clone，环境变量不会。
 type Database struct {
 	Host            string        `yaml:"host"`
 	Port            int           `yaml:"port"`
@@ -189,7 +189,7 @@ func (d Database) String() string {
 // Default 返回内置默认值，即优先级最低的那一层。
 //
 // 契约：默认值与 configs/config.yaml 必须逐字段一致，由 TestConfigFileMatchesDefaults 钉死。
-// 用带字段名的字面量而不是位置字面量：将来给结构体加字段时，位置写法会静默错位。
+// 用带字段名的字面量而不是位置字面量：加字段时位置写法会静默错位。
 func Default() *Config {
 	return &Config{
 		App: App{
