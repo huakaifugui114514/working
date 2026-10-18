@@ -32,10 +32,11 @@ const (
 
 // Server 持有 HTTP 服务的全部运行期状态。
 type Server struct {
-	cfg       config.Config
-	logger    *slog.Logger
-	info      version.Info
-	startedAt time.Time
+	cfg         config.Config
+	logger      *slog.Logger
+	info        version.Info
+	collections CollectionService
+	startedAt   time.Time
 
 	// inFlight 正在处理的请求数；用 atomic 而不是 Mutex：只有一个计数器、无关联状态，
 	// 原子操作更轻，也不会出现"忘记解锁"。
@@ -49,12 +50,14 @@ type Server struct {
 // New 组装一个可运行的 Server（不启动监听）。
 //
 // 构造与启动分离，是为了让测试可以直接拿 Handler() 跑 httptest —— 不占端口、不起网络。
-func New(cfg config.Config, logger *slog.Logger, info version.Info) *Server {
+// collections 由 main 注入；只测 healthz 的测试可以传 nil。
+func New(cfg config.Config, logger *slog.Logger, info version.Info, collections CollectionService) *Server {
 	s := &Server{
-		cfg:       cfg,
-		logger:    logger,
-		info:      info,
-		startedAt: time.Now(),
+		cfg:         cfg,
+		logger:      logger,
+		info:        info,
+		collections: collections,
+		startedAt:   time.Now(),
 	}
 
 	s.http = &http.Server{
@@ -96,6 +99,12 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
+	mux.HandleFunc("POST "+collectionsPath, s.handleCreateCollection)
+	mux.HandleFunc("GET "+collectionsPath, s.handleListCollections)
+	mux.HandleFunc("GET "+collectionsPath+"/{id}", s.handleGetCollection)
+	mux.HandleFunc("PATCH "+collectionsPath+"/{id}", s.handleUpdateCollection)
+	mux.HandleFunc("DELETE "+collectionsPath+"/{id}", s.handleDeleteCollection)
+
 	// 调试路由只在 dev 注册：生产环境多一个入口就多一个攻击面
 	if s.cfg.App.Env == config.EnvDev {
 		mux.HandleFunc("GET /debug/sleep", s.handleDebugSleep)
@@ -128,7 +137,7 @@ type healthzResponse struct {
 }
 
 // handleHealthz 是存活探针：只反映"进程能否处理请求"，**不检查** DB/Redis。
-// 依赖检查属于以后的 /readyz——混在一起会导致数据库抖动时容器被反复重启。
+// 依赖检查应放在独立的就绪探针里——混在一起会导致数据库抖动时容器被反复重启。
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	resp := healthzResponse{
 		Status:        healthzStatus,

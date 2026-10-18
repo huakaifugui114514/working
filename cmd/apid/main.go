@@ -13,6 +13,8 @@ import (
 	"syscall"
 
 	"github.com/huakaifugui114514/working/internal/config"
+	"github.com/huakaifugui114514/working/internal/database"
+	"github.com/huakaifugui114514/working/internal/knowledge"
 	"github.com/huakaifugui114514/working/internal/observability"
 	"github.com/huakaifugui114514/working/internal/transport/rest"
 	"github.com/huakaifugui114514/working/internal/version"
@@ -52,15 +54,29 @@ func run() error {
 	}
 	slog.SetDefault(logger)
 
-	// 4. 组装服务（只构造、不启动监听；启动与构造分离，测试才能用 Handler() 跑 httptest）。
-	svc := rest.New(*cfg, logger, version.Get())
+	// 4. 打开数据库连接池。连不上就启动失败：
+	//    带着坏连接跑起来，故障会从"启动就报错"推迟成"每个请求都 500"，排查成本更高。
+	db, err := database.Open(context.Background(), cfg.Database, logger)
+	if err != nil {
+		return fmt.Errorf("连接数据库失败: %w", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.Error("关闭数据库连接池失败", "error", err)
+		}
+	}()
 
-	// 5. 信号 ctx：Ctrl+C 是 SIGINT，而 k8s / docker stop 发的是 SIGTERM。
+	// 5. 装配依赖：repository → service → HTTP server。
+	//    main 只做装配，业务规则在 knowledge.Service，SQL 在 MySQLRepository。
+	collectionService := knowledge.NewService(knowledge.NewMySQLRepository(db))
+	svc := rest.New(*cfg, logger, version.Get(), collectionService)
+
+	// 6. 信号 ctx：Ctrl+C 是 SIGINT，而 k8s / docker stop 发的是 SIGTERM。
 	//    只监听 SIGINT，线上就会被 SIGKILL 硬杀，优雅退出白写。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 6. 在 goroutine 里启动：Start 会阻塞到服务关闭，放在主 goroutine 就没人处理信号了。
+	// 7. 在 goroutine 里启动：Start 会阻塞到服务关闭，放在主 goroutine 就没人处理信号了。
 	//
 	//    channel 必须带缓冲：Shutdown 之后 Start 会返回（ErrServerClosed 已被它吞成 nil），
 	//    而那时主 goroutine 已经离开 select、没人接收——无缓冲 channel 会让这个 goroutine

@@ -250,10 +250,15 @@
   （up / version / down -y / force <n>；`iofs` + `mysql.WithInstance`，迁移连接用 `MigrateDSN`）。
   实测：up → version=1；再 up → 无需迁移；down -y → 只剩 schema_migrations；再 up 恢复；
   人为 dirty=1 → version 报错退出 → force 1 修复。`migrations/embed_test.go` 钉住文件名规则
-- 🟡 repository 契约与骨架（`internal/knowledge`，**用户实现**）：model.go（Collection/Cursor/PATCH 语义的
-  CollectionUpdate/ErrNotFound）、repository.go（接口）、mysql.go（5 个方法 + `panic` 占位 + 实现提示）。
-  M2 先只做 collections：Create / Get / List（keyset）/ Update（PATCH）/ SoftDelete
-- ⬜ M2 待办：实现 repository 5 个方法 + 集成测试 → service → handler
+- ✅ repository（`internal/knowledge`，`e205616`）：model.go（Collection/Cursor/PATCH 语义）、
+  repository.go（接口）、mysql.go（Create / Get / List keyset / Update PATCH / SoftDelete）+ 集成测试。
+  关键边界：cursor.ID 传 `id[:]`、分页 `limit+1`、PATCH 用事务 + `FOR UPDATE`、软删看 `RowsAffected`
+- ✅ service（`internal/knowledge/service.go`）：校验（name trim、rune 长度、limit 1..100、uuid.Nil）、
+  `ErrNotFound → not_found`、其他错误 → `internal_error`；表驱动单测 + fake repository，覆盖率 100%
+- ✅ HTTP handler（`internal/transport/rest/collection.go`）：`/api/v1/collections` 五个端点、
+  cursor base64url（8B ms + 16B UUID）、`httptest` 覆盖 201/200/204/400/404/500 与客户端取消
+- ✅ `cmd/apid` 装配 DB → repository → service → server；启动连不上 MySQL 直接失败
+- ✅ M2 collections CRUD 完成；⬜ M3：documents / collection_documents 的 service + handler，检索 / Agent 后续
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -264,7 +269,7 @@
 make help                  # 查看全部工程命令
 make check                 # 提交前一键检查：fmt + vet + lint + test -race
 make lint                  # 只跑 golangci-lint（配置 .golangci.yml，v2.14.0）
-make run                   # 本地起服务（默认 :8080）
+make run                   # 本地起服务（默认 :8080；需要 MySQL + KF_DATABASE_*）
 make build                 # 编译到 bin/apid，版本号由 git + ldflags 注入
 KF_SERVER_ADDR=:18080 ./bin/apid   # 环境变量覆盖配置（验证配置分层）
 curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / 在途请求数
@@ -285,13 +290,13 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
    `git branch -D backup/pre-history-clean && git update-ref -d refs/original/refs/heads/main && git gc --prune=now`
 
 3. ✅ M1 全部完成（config / observability / middleware / rest / cmd/apid，服务可运行）。
-   ⬜ **M2 下一步**：`internal/database`（DSN / MigrateURL）→ 接入 golang-migrate（`source/iofs`）→
-   `migrations/0001_init.sql`（**表结构由用户设计**）→ repository / service / handler。
+   ✅ M2 collections CRUD 完成：database → migrate/0001 → repository → service → handler → cmd/apid。
+   ⬜ **M3 下一步**：documents / collection_documents（repository + service + handler），再做检索。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备
 5. ✅ golangci-lint 已装（v2.14.0，`~/go/bin/`），`make lint` 已接入 `make check`；
    server.go 的 `unused` 临时豁免已随实现完成删除（`8592751`）
-6. ✅ 迁移工具已拍板：**`golang-migrate`**（`docs/adr/002-迁移工具改选-golang-migrate.md`）。
-   接入时注意三点：`source/iofs` 构造 embed 源、DSN 多语句需 `multiStatements=true`、
-   失败后版本表进 dirty 需 `Force(version)` 修。待办：接入 + `0001_init.sql`
+6. ✅ 迁移工具已拍板并接入：**`golang-migrate`**（`docs/adr/002-迁移工具改选-golang-migrate.md`）。
+   `source/iofs` 构造 embed 源、DSN 多语句用 `multiStatements=true`、dirty 用 `Force(version)` 修；
+   `cmd/migrate` 已可用，`0001_init` 已在真实 MySQL 8.4 验证。

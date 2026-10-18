@@ -2,9 +2,9 @@
 
 AI Native 企业知识库与 Agent 平台（Go 服务端）。
 
-> **当前状态：M1 可运行骨架。**
-> 配置加载、结构化日志、HTTP 中间件、`/healthz`、统一 404、优雅退出**已实现并有真实验收**（见「快速开始」）。
-> 业务接口（知识库 CRUD / 检索 / Agent）尚未实现——请不要按本文部署到生产。
+> **当前状态：M2 collections CRUD 已可运行。**
+> 配置、日志、HTTP 中间件、`/healthz`、优雅退出，以及知识库的创建/查询/分页/更新/软删**已实现并有真实验收**（见「快速开始」与「知识库 CRUD」）。
+> 文档管理、检索、Agent 尚未实现——请不要按本文部署到生产。
 
 ## 技术栈
 
@@ -20,11 +20,16 @@ AI Native 企业知识库与 Agent 平台（Go 服务端）。
 
 ## 快速开始
 
-前置：Go 1.27+（本机 Go 较旧时，`GOTOOLCHAIN=auto` 会在首次构建自动下载匹配的工具链）。
+前置：Go 1.27+、本地 MySQL 8（见「本地数据库」）。`apid` 启动时会连接数据库，连不上直接失败退出。
 
 ```bash
 make build                                   # 编译到 bin/apid，版本号由 git + ldflags 注入
-KF_SERVER_ADDR=:18080 ./bin/apid             # 启动（环境变量覆盖配置里的 :8080）
+
+set -a; . deploy/.env; set +a                # 读取 MYSQL_* 环境变量
+KF_DATABASE_HOST=127.0.0.1 KF_DATABASE_PORT="${MYSQL_PORT:-3306}" \
+KF_DATABASE_NAME="$MYSQL_DATABASE" KF_DATABASE_USER="$MYSQL_USER" \
+KF_DATABASE_PASSWORD="$MYSQL_PASSWORD" \
+KF_SERVER_ADDR=:18080 ./bin/apid
 ```
 
 启动日志（JSON，含 addr / env / version / commit）：
@@ -52,7 +57,7 @@ curl -s localhost:18080/healthz | python3 -m json.tool
 }
 ```
 
-`in_flight` 是"正在处理中的请求数"，**不含探针自己**。它只反映"进程能否处理请求"，**不检查** DB/Redis——依赖检查属于以后的 `/readyz`（混在一起会导致数据库抖动时容器被反复重启）。
+`in_flight` 是"正在处理中的请求数"，**不含探针自己**。它只反映"进程能否处理请求"，**不检查** DB/Redis——依赖检查应放在独立的就绪探针里，混在一起会导致数据库抖动时容器被反复重启。
 
 ### 2. 统一 404
 
@@ -122,7 +127,17 @@ docker compose down         # 停（数据保留在卷里）；down -v 连数据
 后者在密码错误时也返回 0（实测），那种健康检查等于没做。
 
 数据库迁移工具已定为 [`golang-migrate`](docs/adr/002-迁移工具改选-golang-migrate.md)
-（曾选 `goose`，同日改选；两次取舍的理由与实测代价都记在 ADR 里）。接入工作在进行中。
+（曾选 `goose`，同日改选；两次取舍的理由与实测代价都记在 ADR 里）。
+
+首次启动或 schema 变更后执行迁移：
+
+```bash
+set -a; . deploy/.env; set +a
+KF_DATABASE_HOST=127.0.0.1 KF_DATABASE_PORT="${MYSQL_PORT:-3306}" \
+KF_DATABASE_NAME="$MYSQL_DATABASE" KF_DATABASE_USER="$MYSQL_USER" \
+KF_DATABASE_PASSWORD="$MYSQL_PASSWORD" \
+go run ./cmd/migrate up
+```
 
 ## 配置
 
@@ -148,6 +163,14 @@ docker compose down         # 停（数据保留在卷里）；down -v 连数据
 |---|---|---|---|
 | GET | `/healthz` | 存活探针：版本号 / 启动时间 / 在途请求数 | ✅ |
 | GET | `/debug/sleep?d=3s` | 人为制造慢请求，用于验证优雅退出；**仅 `dev` 注册** | ✅ |
+| POST | `/api/v1/collections` | 创建知识库 | ✅ |
+| GET | `/api/v1/collections` | 分页列表：`limit` + `cursor` → `items` + `next_cursor` | ✅ |
+| GET | `/api/v1/collections/{id}` | 按 id 查询 | ✅ |
+| PATCH | `/api/v1/collections/{id}` | PATCH 更新（只改出现的字段） | ✅ |
+| DELETE | `/api/v1/collections/{id}` | 软删 | ✅ |
+
+完整契约见 [`api/openapi.yaml`](api/openapi.yaml)；路径、游标和 PATCH 语义的取舍见
+[ADR 003](docs/adr/003-collections-api.md)。
 
 错误码分两层：**业务码**在 `internal/apperr`（如 `invalid_argument`），**传输层码**在 `internal/transport/rest/respond`（如 `route_not_found`），映射只在 `respond.StatusForCode` 一处。
 
@@ -159,18 +182,44 @@ docker compose down         # 停（数据保留在卷里）；down -v 连数据
 
 4xx 回显业务 message；**5xx 只回固定文案**，具体原因只进日志（避免把内部信息泄露给调用方）。
 
+### 知识库 CRUD
+
+```bash
+BASE=http://127.0.0.1:18080/api/v1/collections
+
+# 创建：成功返回 201 + Location
+curl -sS -X POST "$BASE" -H 'Content-Type: application/json' \
+  -d '{"name":"产品文档","description":"可选"}'
+
+# 查询
+curl -sS "$BASE/<id>"
+
+# 分页：next_cursor 为 null 表示没有下一页
+curl -sS "$BASE?limit=20"
+curl -sS "$BASE?limit=20&cursor=<next_cursor>"
+
+# PATCH：只改 name，description 不动；空对象 {} 是合法 no-op
+curl -sS -X PATCH "$BASE/<id>" -H 'Content-Type: application/json' \
+  -d '{"name":"新名字"}'
+
+# 软删：204，无响应体；重复删除返回 404
+curl -sS -i -X DELETE "$BASE/<id>"
+```
+
 ## 目录结构
 
 ```
-cmd/         可执行程序入口（每个服务一个子目录，只做装配）
+cmd/         可执行程序入口（apid / migrate，只做装配）
 internal/    私有代码，外部模块不可导入
   config/        配置加载与校验
   apperr/        业务错误与错误码
+  database/      连接池、DSN、迁移连接
+  knowledge/     知识库领域模型、repository、service
   observability/ 日志与 trace_id
   transport/     HTTP 传输层（rest + middleware + respond）
   version/       构建期注入的版本信息
 pkg/         可被外部复用的库（确实需要时才放）
-api/         接口契约（proto / openapi）
+api/         接口契约（openapi.yaml）
 migrations/  数据库迁移脚本（只追加，禁止手改已应用的迁移）
 deploy/      部署与编排（docker-compose / grafana）
 configs/     配置模板
@@ -183,7 +232,7 @@ docs/        设计与决策记录（ADR / schema / 架构）
 make help     # 查看全部工程命令
 make check    # 提交前一键检查：gofmt + go vet + golangci-lint + go test -race
 make build    # 编译到 bin/apid（版本号由 git + ldflags 注入）
-make run      # 本地运行（go run，版本号为 dev）
+make run      # 本地运行（go run，版本号为 dev；需要先启动 MySQL 并配好 KF_DATABASE_*）
 ```
 
 `make check` 全绿是提交的前提，当前状态：
@@ -192,10 +241,19 @@ make run      # 本地运行（go run，版本号为 dev）
 gofmt 完成 ／ go vet 通过 ／ 0 issues. golangci-lint 通过
 ok  internal/apperr
 ok  internal/config
+ok  internal/database
+ok  internal/knowledge
 ok  internal/observability
 ok  internal/transport/rest
 ok  internal/transport/rest/middleware
 ok  internal/transport/rest/respond
+ok  migrations
+```
+
+repository 的集成测试单独跑（需要本地 MySQL）：
+
+```bash
+go test -race -tags=integration -count=1 ./internal/knowledge
 ```
 
 ## 实现状态
@@ -203,14 +261,19 @@ ok  internal/transport/rest/respond
 - [x] `internal/config` — 三层配置加载（默认值 / YAML / 环境变量）+ `errors.Join` 全量校验
 - [x] `internal/apperr` — 业务错误 `Error{Code, Message, Cause}` + `errors.Is/As` 穿透
 - [x] `internal/observability` — `slog` logger（json/text）+ `trace_id` 自动注入
+- [x] `internal/database` — DSN / 迁移 DSN / 连接池 / 集成测试
+- [x] `migrations` — `0001_init`（collections / documents / collection_documents）+ `cmd/migrate`
+- [x] `internal/knowledge` — 领域模型、repository（keyset 分页 / PATCH / 软删）、service 校验与错误翻译
+- [x] `internal/transport/rest/collection.go` — collections 五个 HTTP 端点 + cursor 编解码
 - [x] `internal/transport/rest/respond` — 统一 JSON 响应与错误体（5xx 不泄露内部信息）
 - [x] `internal/transport/rest/middleware` — RequestID / InFlight / AccessLog / Recover
 - [x] `internal/transport/rest` — 路由装配、`/healthz`、统一 404、优雅退出
-- [x] `cmd/apid` — 装配流程（配置 → 日志 → 服务 → 信号 → 优雅退出）
-- [x] 单元测试与竞态检测门禁 — 6 个包，42 个用例 + 55 个表驱动子用例
+- [x] `cmd/apid` — 配置 → 日志 → DB → repository → service → 信号 → 优雅退出
+- [x] `api/openapi.yaml` — collections API 契约
 - [x] 本地 MySQL 8 编排（`deploy/docker-compose.yml` + 真实健康检查）
-- [ ] 迁移工具接入（`golang-migrate`，见 [ADR 002](docs/adr/002-迁移工具改选-golang-migrate.md)）+ 表结构设计
-- [ ] 业务接口（知识库 CRUD / 检索 / Agent）— **M2 进行中**
+- [x] 单元测试 + repository 集成测试 + 竞态检测门禁
+- [ ] 文档管理（documents / collection_documents 的 service + handler）
+- [ ] 检索 / Agent 接口
 
 ## 协作与规范
 

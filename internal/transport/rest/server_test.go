@@ -21,6 +21,11 @@ import (
 // newTestServer 用最少的噪音造一个 Server：日志级别设成 error，避免测试输出被访问日志刷屏。
 func newTestServer(t *testing.T, mutate func(*config.Config)) *Server {
 	t.Helper()
+	return newTestServerWithCollections(t, mutate, nil)
+}
+
+func newTestServerWithCollections(t *testing.T, mutate func(*config.Config), collections CollectionService) *Server {
+	t.Helper()
 
 	cfg := config.Default()
 	if mutate != nil {
@@ -30,7 +35,7 @@ func newTestServer(t *testing.T, mutate func(*config.Config)) *Server {
 	if err != nil {
 		t.Fatalf("创建测试 logger 失败: %v", err)
 	}
-	return New(*cfg, logger, version.Info{Version: "v-test", Commit: "c0ffee", BuildTime: "2026-01-01T00:00:00Z"})
+	return New(*cfg, logger, version.Info{Version: "v-test", Commit: "c0ffee", BuildTime: "2026-01-01T00:00:00Z"}, collections)
 }
 
 // do 走 httptest 直接调用装配好的 handler：不起真实端口、不经过网络。
@@ -312,7 +317,7 @@ func TestServerLoggerIsQuiet(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	cfg := *config.Default()
-	s := New(cfg, logger, version.Info{Version: "v-test"})
+	s := New(cfg, logger, version.Info{Version: "v-test"}, nil)
 
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
