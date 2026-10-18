@@ -1,0 +1,280 @@
+openapi: 3.0.3
+
+info:
+  title: KnowFlow Collections API
+  version: 0.1.0
+  description: |
+    KnowFlow 知识库（collection）的 HTTP 契约。
+
+    约定：
+    - 成功响应直接返回资源 JSON，不套 `{data: ...}`。
+    - 失败统一返回 `{"error":{"code":"...","message":"..."}}`。
+    - 时间一律 UTC，RFC 3339 格式，毫秒精度。
+    - `cursor` 是不透明 token；客户端只能原样回传，不要解析。
+    - 列表按 `(created_at DESC, id DESC)` 排序。
+
+servers:
+  - url: /
+
+tags:
+  - name: collections
+    description: 知识库的创建、查询、分页、更新与软删。
+
+paths:
+  /api/v1/collections:
+    get:
+      tags: [collections]
+      operationId: listCollections
+      summary: 分页列出知识库
+      description: |
+        返回按 `(created_at DESC, id DESC)` 排序的一页。
+        `next_cursor` 为 `null` 表示没有下一页；否则把它原样作为下一次请求的 `cursor`。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: 每页条数，默认 20。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          description: 上一页返回的 `next_cursor`，原样回传；不要自己构造。
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 一页知识库
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionList'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [collections]
+      operationId: createCollection
+      summary: 创建知识库
+      description: |
+        `name` 必填，首尾空白会被 trim，trim 后不能为空。
+        同名知识库允许重复（当前没有唯一约束），因此不会返回 409。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionCreate'
+      responses:
+        '201':
+          description: 创建成功
+          headers:
+            Location:
+              description: 新资源的路径，例如 `/api/v1/collections/{id}`。
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/collections/{id}:
+    parameters:
+      - $ref: '#/components/parameters/CollectionID'
+
+    get:
+      tags: [collections]
+      operationId: getCollection
+      summary: 按 id 获取知识库
+      responses:
+        '200':
+          description: 知识库
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    patch:
+      tags: [collections]
+      operationId: updateCollection
+      summary: 按 PATCH 语义更新知识库
+      description: |
+        只更新请求中出现的字段；`null` 与缺省都表示“不改”。
+        - `{"name":"新名字"}`：只改 name。
+        - `{"description":""}`：清空 description。
+        - `{}`：合法的 no-op，返回当前记录，不刷新 `updated_at`。
+        - `name` 不能是空串；未知字段会返回 400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionUpdate'
+      responses:
+        '200':
+          description: 更新后的完整知识库
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [collections]
+      operationId: deleteCollection
+      summary: 软删知识库
+      description: |
+        软删后记录不再出现在查询和列表中。
+        对不存在的 id，或对已经软删的 id 再次删除，都返回 404。
+      responses:
+        '204':
+          description: 删除成功，无响应体
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    CollectionID:
+      name: id
+      in: path
+      required: true
+      description: 知识库 UUID。
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    Collection:
+      type: object
+      required: [id, name, description, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1024
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+          description: UTC，毫秒精度。
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+          description: UTC，毫秒精度。
+
+    CollectionCreate:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: 首尾空白会被 trim；trim 后不能为空。
+        description:
+          type: string
+          maxLength: 1024
+          default: ""
+          nullable: true
+          description: 不传或传 null 都按空串处理。
+
+    CollectionUpdate:
+      type: object
+      additionalProperties: false
+      description: |
+        空对象 `{}` 合法，表示 no-op。
+        字段为 null 或未出现都表示“不改”；清空 description 请传空串。
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          nullable: true
+          description: 首尾空白会被 trim；trim 后不能为空。
+        description:
+          type: string
+          maxLength: 1024
+          nullable: true
+
+    CollectionList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Collection'
+        next_cursor:
+          type: string
+          nullable: true
+          description: 没有下一页时为 null；否则原样回传。
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [invalid_argument, not_found, internal_error]
+            message:
+              type: string
+
+  responses:
+    InvalidArgument:
+      description: 请求参数、JSON、UUID 或 cursor 不合法
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: 资源不存在或已被软删
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    InternalError:
+      description: 服务端内部错误；响应不包含内部细节
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
