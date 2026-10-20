@@ -32,7 +32,7 @@ func run() error {
 		retention = flag.Duration("retention", purge.DefaultRetention,
 			"软删后保留多久才物理删除（例如 720h 表示 30 天）")
 		batchSize = flag.Int("batch", purge.DefaultBatchSize,
-			"每批处理的关联/父行数；建议 500–2000")
+			"每批处理的父行数；建议 500–2000")
 		interval = flag.Duration("interval", purge.DefaultInterval,
 			"批间等待时间；0 表示不等待，仅建议测试使用")
 		dryRun = flag.Bool("dry-run", false,

@@ -2,19 +2,20 @@
 //
 // 设计约束（见 docs/adr/004-documents-api.md）：
 //   - 只清理 deleted_at 早于保留期的行；读路径完全不受影响
-//   - 分批执行，批间 sleep，避免长事务、锁等待和主从延迟
+//   - 按父行（document / collection）开短事务，先锁父行再删子行
 //   - 先删关联，再删 document / collection；没有关联的过期行才允许物理删除
-//   - 不依赖外键（schema 故意没有 FK），一致性由本包的 NOT EXISTS 条件兜底
+//   - 不依赖外键（schema 故意没有 FK），一致性由事务里的条件判断兜底
 //
-// 本包不挂 HTTP，也不在请求路径上运行：cmd/purge 由 cron / 定时任务调用。
+// restore 与 purge 的并发协议：双方都对同一父行执行 SELECT ... FOR UPDATE。
+// 谁先拿到锁谁赢；后拿到锁的一方重新读取 deleted_at 再决定恢复或删除。
 package purge
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +42,7 @@ type DB interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
 // Options 是一次 purge 运行的参数。
@@ -48,7 +50,7 @@ type Options struct {
 	// Retention 是软删后保留多久才允许物理删除；必须 > 0。
 	Retention time.Duration
 
-	// BatchSize 是每批最多处理多少个 document / collection；必须 1..MaxBatchSize。
+	// BatchSize 是每批最多取多少个 document / collection 父行；必须 1..MaxBatchSize。
 	BatchSize int
 
 	// Interval 是批间等待；0 表示不等待（测试用），负数非法。
@@ -102,15 +104,16 @@ func NewRunner(db DB, logger *slog.Logger) *Runner {
 	return &Runner{db: db, logger: logger}
 }
 
-// Run 清理所有超过保留期的软删数据，直到没有可清理的行。
+// Run 清理所有超过保留期的软删数据，直到没有可清理的父行。
 //
-// 每一轮按固定顺序执行：
-//  1. 删除"过期 document"的关联
-//  2. 删除"过期 collection"的关联
-//  3. 删除已无关联的过期 document
-//  4. 删除已无关联的过期 collection
+// 每一轮先取一批候选 document / collection id，然后逐个父行开事务：
+//  1. SELECT ... FOR UPDATE 锁父行
+//  2. 重新确认 deleted_at 仍然过期（restore 可能已经抢先把它改回 NULL）
+//  3. 删除关联
+//  4. 删除父行
+//  5. 提交
 //
-// 顺序不能反：先删父行会留下孤儿关联；先删关联才能让第 3/4 步的 NOT EXISTS 成立。
+// 不在事务里锁住父行就开始删关联，会出现"restore 成功但关联被删"的窗口。
 func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 	if err := opts.Validate(); err != nil {
 		return Stats{}, err
@@ -140,36 +143,39 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 	}
 
 	for {
-		var progressed int64
+		documentIDs, err := r.selectExpiredDocumentIDs(ctx, cutoff, opts.BatchSize)
+		if err != nil {
+			return stats, err
+		}
+		collectionIDs, err := r.selectExpiredCollectionIDs(ctx, cutoff, opts.BatchSize)
+		if err != nil {
+			return stats, err
+		}
+		if len(documentIDs) == 0 && len(collectionIDs) == 0 {
+			break
+		}
+
 		stats.Batches++
+		var progressed int64
 
-		n, err := r.purgeDocumentAssociations(ctx, cutoff, opts.BatchSize)
-		if err != nil {
-			return stats, err
+		for _, id := range documentIDs {
+			associations, documents, err := r.purgeDocument(ctx, id, cutoff)
+			if err != nil {
+				return stats, err
+			}
+			stats.Associations += associations
+			stats.Documents += documents
+			progressed += associations + documents
 		}
-		stats.Associations += n
-		progressed += n
-
-		n, err = r.purgeCollectionAssociations(ctx, cutoff, opts.BatchSize)
-		if err != nil {
-			return stats, err
+		for _, id := range collectionIDs {
+			associations, collections, err := r.purgeCollection(ctx, id, cutoff)
+			if err != nil {
+				return stats, err
+			}
+			stats.Associations += associations
+			stats.Collections += collections
+			progressed += associations + collections
 		}
-		stats.Associations += n
-		progressed += n
-
-		n, err = r.purgeDocuments(ctx, cutoff, opts.BatchSize)
-		if err != nil {
-			return stats, err
-		}
-		stats.Documents += n
-		progressed += n
-
-		n, err = r.purgeCollections(ctx, cutoff, opts.BatchSize)
-		if err != nil {
-			return stats, err
-		}
-		stats.Collections += n
-		progressed += n
 
 		r.logger.DebugContext(ctx, "purge 批次完成",
 			"batch", stats.Batches,
@@ -177,6 +183,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 			"documents", stats.Documents,
 			"collections", stats.Collections)
 
+		// 候选行可能全部被 restore/其他 worker 抢先处理；没有进展就停，
+		// 避免同一批候选永远选出来、又永远删不掉。
 		if progressed == 0 {
 			break
 		}
@@ -195,8 +203,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 
 // countCandidates 统计 dry-run 会删除的行数。
 //
-// 关联用 OR 统计：同一个关联同时指向过期 document 和过期 collection 时只算一次，
-// 实际删除时也只会删一次。
+// 关联用 OR 统计：同一个关联同时指向过期 document 和过期 collection 时只算一次。
+// document / collection 直接数过期行：过期父行的关联会被先删掉，最终都会被物理删除。
 func (r *Runner) countCandidates(ctx context.Context, cutoff time.Time, stats *Stats) error {
 	queries := []struct {
 		name string
@@ -216,8 +224,6 @@ func (r *Runner) countCandidates(ctx context.Context, cutoff time.Time, stats *S
 			dst:  &stats.Associations,
 		},
 		{
-			// 过期 document 的关联会先被清掉，所以"过期 document"最终都会被物理删除；
-			// dry-run 直接数过期行即可，不需要再算当前有没有关联。
 			name: "documents",
 			stmt: `SELECT COUNT(*)
 				   FROM documents d
@@ -226,7 +232,6 @@ func (r *Runner) countCandidates(ctx context.Context, cutoff time.Time, stats *S
 			dst:  &stats.Documents,
 		},
 		{
-			// 同上：过期 collection 的关联会先被清掉，最终都会被删除。
 			name: "collections",
 			stmt: `SELECT COUNT(*)
 				   FROM collections c
@@ -244,170 +249,143 @@ func (r *Runner) countCandidates(ctx context.Context, cutoff time.Time, stats *S
 	return nil
 }
 
-// purgeDocumentAssociations 删除指向过期 document 的关联。
+// purgeDocument 在一个事务里处理一个过期 document。
 //
-// 按关联行（而不是按 document）分批：一个 document 可能属于很多 collection，
-// 按父行分批会让单条 DELETE 一次删掉巨量关联，回到长事务问题。
-func (r *Runner) purgeDocumentAssociations(ctx context.Context, cutoff time.Time, batch int) (int64, error) {
-	const selectStmt = `SELECT cd.collection_id, cd.document_id
-						FROM collection_documents cd
-						JOIN documents d ON d.id = cd.document_id
-						WHERE d.deleted_at IS NOT NULL AND d.deleted_at < ?
-						ORDER BY cd.document_id, cd.collection_id
-						LIMIT ?`
-	pairs, err := queryAssociationPairs(ctx, r.db, selectStmt, cutoff, batch)
+// 先锁父行再删关联，是 restore 与 purge 并发正确性的核心：
+// restore 也会对同一行 FOR UPDATE，二者只能有一个先拿到锁。
+func (r *Runner) purgeDocument(ctx context.Context, id uuid.UUID, cutoff time.Time) (associations, documents int64, err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, fmt.Errorf("begin purge document id(%x): %w", id[:], err)
 	}
-	if len(pairs) == 0 {
-		return 0, nil
+	defer func() { _ = tx.Rollback() }()
+
+	eligible, err := lockExpiredDocument(ctx, tx, id, cutoff)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !eligible {
+		return 0, 0, nil
 	}
 
-	stmt := `DELETE FROM collection_documents
-			 WHERE (collection_id, document_id) IN (` + pairPlaceholders(len(pairs)) + `)`
-	res, err := r.db.ExecContext(ctx, stmt, pairArgs(pairs)...)
+	associations, err = execDelete(ctx, tx,
+		`DELETE FROM collection_documents WHERE document_id = ?`, id[:])
 	if err != nil {
-		return 0, fmt.Errorf("删除过期 document 的关联: %w", err)
+		return 0, 0, fmt.Errorf("delete document associations id(%x): %w", id[:], err)
 	}
-	n, err := res.RowsAffected()
+
+	// M4.1 增加 document_chunks / document_contents 后，这里必须在删 documents
+	// 之前先按 document_id 删除正文和 chunk，否则会留下孤儿数据。
+
+	documents, err = execDelete(ctx, tx, `DELETE FROM documents WHERE id = ?`, id[:])
 	if err != nil {
-		return 0, fmt.Errorf("读取删除关联行数: %w", err)
+		return 0, 0, fmt.Errorf("delete document id(%x): %w", id[:], err)
 	}
-	return n, nil
+	if documents != 1 {
+		return 0, 0, fmt.Errorf("delete document id(%x) affected %d rows, want 1", id[:], documents)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit purge document id(%x): %w", id[:], err)
+	}
+	return associations, documents, nil
 }
 
-// purgeCollectionAssociations 删除指向过期 collection 的关联。
-// 同样按关联行分批，避免一个超大知识库让单条 DELETE 删掉几十万行。
-func (r *Runner) purgeCollectionAssociations(ctx context.Context, cutoff time.Time, batch int) (int64, error) {
-	const selectStmt = `SELECT cd.collection_id, cd.document_id
-						FROM collection_documents cd
-						JOIN collections c ON c.id = cd.collection_id
-						WHERE c.deleted_at IS NOT NULL AND c.deleted_at < ?
-						ORDER BY cd.collection_id, cd.document_id
-						LIMIT ?`
-	pairs, err := queryAssociationPairs(ctx, r.db, selectStmt, cutoff, batch)
+// purgeCollection 在一个事务里处理一个过期 collection。
+func (r *Runner) purgeCollection(ctx context.Context, id uuid.UUID, cutoff time.Time) (associations, collections int64, err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, fmt.Errorf("begin purge collection id(%x): %w", id[:], err)
 	}
-	if len(pairs) == 0 {
-		return 0, nil
+	defer func() { _ = tx.Rollback() }()
+
+	eligible, err := lockExpiredCollection(ctx, tx, id, cutoff)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !eligible {
+		return 0, 0, nil
 	}
 
-	stmt := `DELETE FROM collection_documents
-			 WHERE (collection_id, document_id) IN (` + pairPlaceholders(len(pairs)) + `)`
-	res, err := r.db.ExecContext(ctx, stmt, pairArgs(pairs)...)
+	associations, err = execDelete(ctx, tx,
+		`DELETE FROM collection_documents WHERE collection_id = ?`, id[:])
 	if err != nil {
-		return 0, fmt.Errorf("删除过期 collection 的关联: %w", err)
+		return 0, 0, fmt.Errorf("delete collection associations id(%x): %w", id[:], err)
 	}
-	n, err := res.RowsAffected()
+
+	collections, err = execDelete(ctx, tx, `DELETE FROM collections WHERE id = ?`, id[:])
 	if err != nil {
-		return 0, fmt.Errorf("读取删除关联行数: %w", err)
+		return 0, 0, fmt.Errorf("delete collection id(%x): %w", id[:], err)
 	}
-	return n, nil
+	if collections != 1 {
+		return 0, 0, fmt.Errorf("delete collection id(%x) affected %d rows, want 1", id[:], collections)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit purge collection id(%x): %w", id[:], err)
+	}
+	return associations, collections, nil
 }
 
-// purgeDocuments 删除已无关联的过期 document。
-//
-// 删除语句再次带 NOT EXISTS：从 SELECT 到 DELETE 之间如果有人插入了关联，
-// 这一行必须留下，下一轮再处理，不能制造孤儿关联。
-func (r *Runner) purgeDocuments(ctx context.Context, cutoff time.Time, batch int) (int64, error) {
-	ids, err := r.selectExpiredDocumentIDsToDelete(ctx, cutoff, batch)
-	if err != nil {
-		return 0, err
-	}
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	stmt := `DELETE d FROM documents d
-			 WHERE d.id IN (` + placeholders(len(ids)) + `)
-			   AND d.deleted_at IS NOT NULL
-			   AND d.deleted_at < ?
-			   AND NOT EXISTS (SELECT 1 FROM collection_documents cd WHERE cd.document_id = d.id)`
-	args := append(idArgs(ids), cutoff)
-	res, err := r.db.ExecContext(ctx, stmt, args...)
-	if err != nil {
-		return 0, fmt.Errorf("删除过期 document: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("读取删除 document 行数: %w", err)
-	}
-	return n, nil
-}
-
-// purgeCollections 删除已无关联的过期 collection。
-func (r *Runner) purgeCollections(ctx context.Context, cutoff time.Time, batch int) (int64, error) {
-	ids, err := r.selectExpiredCollectionIDsToDelete(ctx, cutoff, batch)
-	if err != nil {
-		return 0, err
-	}
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	stmt := `DELETE c FROM collections c
-			 WHERE c.id IN (` + placeholders(len(ids)) + `)
-			   AND c.deleted_at IS NOT NULL
-			   AND c.deleted_at < ?
-			   AND NOT EXISTS (SELECT 1 FROM collection_documents cd WHERE cd.collection_id = c.id)`
-	args := append(idArgs(ids), cutoff)
-	res, err := r.db.ExecContext(ctx, stmt, args...)
-	if err != nil {
-		return 0, fmt.Errorf("删除过期 collection: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("读取删除 collection 行数: %w", err)
-	}
-	return n, nil
-}
-
-func (r *Runner) selectExpiredDocumentIDsToDelete(ctx context.Context, cutoff time.Time, batch int) ([]uuid.UUID, error) {
-	const stmt = `SELECT d.id
-				  FROM documents d
-				  WHERE d.deleted_at IS NOT NULL AND d.deleted_at < ?
-				    AND NOT EXISTS (SELECT 1 FROM collection_documents cd WHERE cd.document_id = d.id)
-				  ORDER BY d.deleted_at, d.id
-				  LIMIT ?`
-	return queryUUIDs(ctx, r.db, stmt, cutoff, batch)
-}
-
-func (r *Runner) selectExpiredCollectionIDsToDelete(ctx context.Context, cutoff time.Time, batch int) ([]uuid.UUID, error) {
-	const stmt = `SELECT c.id
-				  FROM collections c
-				  WHERE c.deleted_at IS NOT NULL AND c.deleted_at < ?
-				    AND NOT EXISTS (SELECT 1 FROM collection_documents cd WHERE cd.collection_id = c.id)
-				  ORDER BY c.deleted_at, c.id
-				  LIMIT ?`
-	return queryUUIDs(ctx, r.db, stmt, cutoff, batch)
-}
-
-// associationPair 是 collection_documents 的联合主键，用来按行批量 DELETE。
-type associationPair struct {
-	collectionID uuid.UUID
-	documentID   uuid.UUID
-}
-
-func queryAssociationPairs(ctx context.Context, db DB, query string, args ...any) ([]associationPair, error) {
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("查询待清理关联: %w", err)
-	}
-	defer rows.Close()
-
-	pairs := make([]associationPair, 0)
-	for rows.Next() {
-		var pair associationPair
-		if err := rows.Scan(&pair.collectionID, &pair.documentID); err != nil {
-			return nil, fmt.Errorf("扫描待清理关联: %w", err)
+// lockExpiredDocument 锁住 document 行并重新判断它是否仍可清理。
+// 返回 false 表示不存在、已被 restore、或 deleted_at 已不在保留期。
+func lockExpiredDocument(ctx context.Context, tx *sql.Tx, id uuid.UUID, cutoff time.Time) (bool, error) {
+	var deletedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx,
+		`SELECT deleted_at FROM documents WHERE id = ? FOR UPDATE`, id[:]).Scan(&deletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
 		}
-		pairs = append(pairs, pair)
+		return false, fmt.Errorf("lock document id(%x): %w", id[:], err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历待清理关联: %w", err)
+	if !deletedAt.Valid || !deletedAt.Time.Before(cutoff) {
+		return false, nil
 	}
-	return pairs, nil
+	return true, nil
+}
+
+// lockExpiredCollection 锁住 collection 行并重新判断它是否仍可清理。
+func lockExpiredCollection(ctx context.Context, tx *sql.Tx, id uuid.UUID, cutoff time.Time) (bool, error) {
+	var deletedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx,
+		`SELECT deleted_at FROM collections WHERE id = ? FOR UPDATE`, id[:]).Scan(&deletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock collection id(%x): %w", id[:], err)
+	}
+	if !deletedAt.Valid || !deletedAt.Time.Before(cutoff) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func execDelete(ctx context.Context, tx *sql.Tx, stmt string, args ...any) (int64, error) {
+	res, err := tx.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (r *Runner) selectExpiredDocumentIDs(ctx context.Context, cutoff time.Time, batch int) ([]uuid.UUID, error) {
+	const stmt = `SELECT id
+				  FROM documents
+				  WHERE deleted_at IS NOT NULL AND deleted_at < ?
+				  ORDER BY deleted_at, id
+				  LIMIT ?`
+	return queryUUIDs(ctx, r.db, stmt, cutoff, batch)
+}
+
+func (r *Runner) selectExpiredCollectionIDs(ctx context.Context, cutoff time.Time, batch int) ([]uuid.UUID, error) {
+	const stmt = `SELECT id
+				  FROM collections
+				  WHERE deleted_at IS NOT NULL AND deleted_at < ?
+				  ORDER BY deleted_at, id
+				  LIMIT ?`
+	return queryUUIDs(ctx, r.db, stmt, cutoff, batch)
 }
 
 func queryUUIDs(ctx context.Context, db DB, query string, args ...any) ([]uuid.UUID, error) {
@@ -429,36 +407,6 @@ func queryUUIDs(ctx context.Context, db DB, query string, args ...any) ([]uuid.U
 		return nil, fmt.Errorf("遍历待清理 id: %w", err)
 	}
 	return ids, nil
-}
-
-func placeholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
-}
-
-func idArgs(ids []uuid.UUID) []any {
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id[:]
-	}
-	return args
-}
-
-func pairPlaceholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.TrimSuffix(strings.Repeat("(?,?),", n), ",")
-}
-
-func pairArgs(pairs []associationPair) []any {
-	args := make([]any, 0, len(pairs)*2)
-	for _, pair := range pairs {
-		args = append(args, pair.collectionID[:], pair.documentID[:])
-	}
-	return args
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

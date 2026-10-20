@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 func TestOptionsValidate(t *testing.T) {
@@ -36,59 +34,6 @@ func TestOptionsValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestPlaceholders(t *testing.T) {
-	tests := []struct {
-		n    int
-		want string
-	}{
-		{0, ""},
-		{1, "?"},
-		{3, "?,?,?"},
-	}
-	for _, tt := range tests {
-		if got := placeholders(tt.n); got != tt.want {
-			t.Errorf("placeholders(%d) = %q, want %q", tt.n, got, tt.want)
-		}
-	}
-}
-
-func TestPairPlaceholders(t *testing.T) {
-	tests := []struct {
-		n    int
-		want string
-	}{
-		{0, ""},
-		{1, "(?,?)"},
-		{2, "(?,?),(?,?)"},
-	}
-	for _, tt := range tests {
-		if got := pairPlaceholders(tt.n); got != tt.want {
-			t.Errorf("pairPlaceholders(%d) = %q, want %q", tt.n, got, tt.want)
-		}
-	}
-}
-
-func TestArgs(t *testing.T) {
-	id1, id2 := uuid.New(), uuid.New()
-	ids := []uuid.UUID{id1, id2}
-	args := idArgs(ids)
-	if len(args) != 2 {
-		t.Fatalf("idArgs 长度 = %d, want 2", len(args))
-	}
-	if string(args[0].([]byte)) != string(id1[:]) || string(args[1].([]byte)) != string(id2[:]) {
-		t.Fatalf("idArgs 内容错误: %v", args)
-	}
-
-	pairs := []associationPair{{collectionID: id1, documentID: id2}}
-	pairArgs := pairArgs(pairs)
-	if len(pairArgs) != 2 {
-		t.Fatalf("pairArgs 长度 = %d, want 2", len(pairArgs))
-	}
-	if string(pairArgs[0].([]byte)) != string(id1[:]) || string(pairArgs[1].([]byte)) != string(id2[:]) {
-		t.Fatalf("pairArgs 内容错误: %v", pairArgs)
 	}
 }
 
@@ -159,4 +104,9 @@ func (f failingDB) QueryContext(context.Context, string, ...any) (*sql.Rows, err
 func (f failingDB) QueryRowContext(context.Context, string, ...any) *sql.Row {
 	f.t.Fatal("不应访问数据库")
 	return nil
+}
+
+func (f failingDB) BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error) {
+	f.t.Fatal("不应访问数据库")
+	return nil, nil
 }

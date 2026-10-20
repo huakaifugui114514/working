@@ -5,6 +5,7 @@ package purge
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/huakaifugui114514/working/internal/config"
 	"github.com/huakaifugui114514/working/internal/database"
+	"github.com/huakaifugui114514/working/internal/knowledge"
 )
 
 // 集成测试：需要本地 MySQL（deploy/docker-compose.yml）。
@@ -53,7 +55,7 @@ CREATE TEMPORARY TABLE collection_documents (
     KEY idx_collection_created (collection_id, created_at, document_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;`
 
-func newIntegrationDB(t *testing.T) *sql.Conn {
+func openIntegrationDB(t *testing.T) *sql.DB {
 	t.Helper()
 
 	cfg, err := config.Load("")
@@ -66,7 +68,13 @@ func newIntegrationDB(t *testing.T) *sql.Conn {
 		t.Fatalf("连接本地 MySQL 失败（先 cd deploy && docker compose up -d）: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
+func newIntegrationDB(t *testing.T) *sql.Conn {
+	t.Helper()
+
+	db := openIntegrationDB(t)
 	conn, err := db.Conn(context.Background())
 	if err != nil {
 		t.Fatalf("获取固定连接失败: %v", err)
@@ -300,4 +308,155 @@ func TestIntegrationPurge(t *testing.T) {
 	if again.Associations != 0 || again.Documents != 0 || again.Collections != 0 {
 		t.Fatalf("第二次 purge 应为 0, got %+v", again)
 	}
+}
+
+// TestIntegrationPurgeRespectsRestoreLock 验证 restore 与 purge 对同一父行的锁协议。
+//
+// 用 50 年保留期（cutoff 约 1976 年），把测试行伪装成 1970 年软删，
+// 避免碰到本地库里其他真实数据。测试行按精确 id 清理。
+func TestIntegrationPurgeRespectsRestoreLock(t *testing.T) {
+	db := openIntegrationDB(t)
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runner := NewRunner(db, logger)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	old := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+	collectionID := uuid.New()
+	documentIDs := make([]uuid.UUID, 0, 2)
+
+	t.Cleanup(func() {
+		for _, id := range documentIDs {
+			_, _ = db.ExecContext(context.Background(), `DELETE FROM documents WHERE id = ?`, id[:])
+		}
+		_, _ = db.ExecContext(context.Background(),
+			`DELETE FROM collection_documents WHERE collection_id = ?`, collectionID[:])
+		_, _ = db.ExecContext(context.Background(),
+			`DELETE FROM collections WHERE id = ?`, collectionID[:])
+	})
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO collections (id, name, description, created_at, updated_at, deleted_at)
+		 VALUES (?, ?, NULL, ?, ?, NULL)`,
+		collectionID[:], "purge-lock-collection", now, now); err != nil {
+		t.Fatalf("插入 collection: %v", err)
+	}
+
+	insertExpiredDoc := func(id uuid.UUID, title string) {
+		t.Helper()
+		documentIDs = append(documentIDs, id)
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO documents (id, title, source_uri, mime_type, size_bytes, created_at, updated_at, deleted_at)
+			 VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+			id[:], title, now, now, old); err != nil {
+			t.Fatalf("插入 document: %v", err)
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO collection_documents (collection_id, document_id, created_at)
+			 VALUES (?, ?, ?)`,
+			collectionID[:], id[:], now); err != nil {
+			t.Fatalf("插入关联: %v", err)
+		}
+	}
+
+	options := Options{
+		Retention: 50 * 365 * 24 * time.Hour,
+		BatchSize: 10,
+		Interval:  0,
+	}
+
+	t.Run("restore 先锁则 purge 跳过", func(t *testing.T) {
+		documentID := uuid.New()
+		insertExpiredDoc(documentID, "purge-lock-restored")
+
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("获取连接: %v", err)
+		}
+		defer conn.Close()
+
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("开始 restore 事务: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		var locked sql.NullTime
+		if err := tx.QueryRowContext(ctx,
+			`SELECT deleted_at FROM documents WHERE id = ? FOR UPDATE`, documentID[:]).Scan(&locked); err != nil {
+			t.Fatalf("锁 document: %v", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE documents SET deleted_at = NULL, updated_at = ? WHERE id = ?`, now, documentID[:]); err != nil {
+			t.Fatalf("模拟 restore: %v", err)
+		}
+
+		done := make(chan Stats, 1)
+		errCh := make(chan error, 1)
+		go func() {
+			stats, runErr := runner.Run(ctx, options)
+			done <- stats
+			errCh <- runErr
+		}()
+
+		// 给 purge 时间：它会选到该行，但在 FOR UPDATE 上等待 restore 提交。
+		time.Sleep(200 * time.Millisecond)
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("提交 restore: %v", err)
+		}
+
+		select {
+		case runErr := <-errCh:
+			if runErr != nil {
+				t.Fatalf("purge: %v", runErr)
+			}
+			stats := <-done
+			if stats.Documents != 0 || stats.Associations != 0 {
+				t.Fatalf("restore 赢了却被 purge 删除: %+v", stats)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("purge 等待锁超时")
+		}
+
+		var deletedAt sql.NullTime
+		if err := db.QueryRowContext(ctx,
+			`SELECT deleted_at FROM documents WHERE id = ?`, documentID[:]).Scan(&deletedAt); err != nil {
+			t.Fatalf("查询恢复后的 document: %v", err)
+		}
+		if deletedAt.Valid {
+			t.Fatal("document 应已被 restore，deleted_at 应为 NULL")
+		}
+		var associations int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM collection_documents WHERE collection_id = ? AND document_id = ?`,
+			collectionID[:], documentID[:]).Scan(&associations); err != nil {
+			t.Fatalf("查询关联: %v", err)
+		}
+		if associations != 1 {
+			t.Fatalf("restore 后关联应保留, count=%d", associations)
+		}
+
+		_, _ = db.ExecContext(ctx,
+			`DELETE FROM collection_documents WHERE collection_id = ? AND document_id = ?`,
+			collectionID[:], documentID[:])
+		_, _ = db.ExecContext(ctx, `DELETE FROM documents WHERE id = ?`, documentID[:])
+	})
+
+	t.Run("purge 先删则 restore 404", func(t *testing.T) {
+		documentID := uuid.New()
+		insertExpiredDoc(documentID, "purge-lock-purged")
+
+		stats, err := runner.Run(ctx, options)
+		if err != nil {
+			t.Fatalf("purge: %v", err)
+		}
+		if stats.Documents != 1 || stats.Associations != 1 {
+			t.Fatalf("purge stats = %+v, want documents=1 associations=1", stats)
+		}
+
+		repo := knowledge.NewMySQLRepository(db)
+		if _, err := repo.RestoreDocument(ctx, documentID); !errors.Is(err, knowledge.ErrNotFound) {
+			t.Fatalf("物理删除后 restore 应返回 ErrNotFound, got %v", err)
+		}
+	})
 }
