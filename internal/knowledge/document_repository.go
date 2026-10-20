@@ -58,4 +58,13 @@ type DocumentRepository interface {
 	//   - cursor.CreatedAt 是 added_at，cursor.ID 是 document_id
 	//   - limit 由调用方校验（1..100）；next 为 nil 表示没有更多
 	ListDocumentsByCollection(ctx context.Context, collectionID uuid.UUID, cursor *Cursor, limit int) ([]*CollectionDocument, *Cursor, error)
+
+	// RestoreDocument 恢复一个已软删的文档：deleted_at 置 NULL，updated_at 刷新。
+	//
+	// 契约：
+	//   - 行不存在（含已被物理删除）→ ErrNotFound
+	//   - 行存在但 deleted_at 已经是 NULL → ErrConflict（本来就没删）
+	//   - 必须用事务 + SELECT ... FOR UPDATE 锁行；restore 与 purge 通过同一把行锁串行化
+	//   - 关联行、正文（M4.1 之后）都不在这里改；软删时保留，恢复后原样可见
+	RestoreDocument(ctx context.Context, id uuid.UUID) (*Document, error)
 }

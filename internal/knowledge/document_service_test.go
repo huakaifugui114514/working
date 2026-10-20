@@ -14,13 +14,14 @@ import (
 // fakeDocumentRepository 用函数字段注入行为；没设置的函数被调用时直接 panic，
 // 避免测试悄悄走到没预期的分支。
 type fakeDocumentRepository struct {
-	createDocument func(context.Context, string, *string, *string, *int64) (*Document, error)
-	getDocument    func(context.Context, uuid.UUID) (*Document, error)
-	updateDocument func(context.Context, uuid.UUID, DocumentUpdate) (*Document, error)
-	softDelete     func(context.Context, uuid.UUID) error
-	add            func(context.Context, uuid.UUID, uuid.UUID) (*CollectionDocument, error)
-	remove         func(context.Context, uuid.UUID, uuid.UUID) error
-	list           func(context.Context, uuid.UUID, *Cursor, int) ([]*CollectionDocument, *Cursor, error)
+	createDocument  func(context.Context, string, *string, *string, *int64) (*Document, error)
+	getDocument     func(context.Context, uuid.UUID) (*Document, error)
+	updateDocument  func(context.Context, uuid.UUID, DocumentUpdate) (*Document, error)
+	softDelete      func(context.Context, uuid.UUID) error
+	restoreDocument func(context.Context, uuid.UUID) (*Document, error)
+	add             func(context.Context, uuid.UUID, uuid.UUID) (*CollectionDocument, error)
+	remove          func(context.Context, uuid.UUID, uuid.UUID) error
+	list            func(context.Context, uuid.UUID, *Cursor, int) ([]*CollectionDocument, *Cursor, error)
 }
 
 var _ DocumentRepository = (*fakeDocumentRepository)(nil)
@@ -51,6 +52,13 @@ func (f *fakeDocumentRepository) SoftDeleteDocument(ctx context.Context, id uuid
 		panic("unexpected SoftDeleteDocument call")
 	}
 	return f.softDelete(ctx, id)
+}
+
+func (f *fakeDocumentRepository) RestoreDocument(ctx context.Context, id uuid.UUID) (*Document, error) {
+	if f.restoreDocument == nil {
+		panic("unexpected RestoreDocument call")
+	}
+	return f.restoreDocument(ctx, id)
 }
 
 func (f *fakeDocumentRepository) AddDocumentToCollection(ctx context.Context, collectionID, documentID uuid.UUID) (*CollectionDocument, error) {
@@ -419,6 +427,44 @@ func TestServiceUpdateDocument(t *testing.T) {
 			}
 			if !sameOptionalInt64(gotPatch.SizeBytes, tt.wantSize) {
 				t.Fatalf("repo 收到 size_bytes=%+v, want %+v", gotPatch.SizeBytes, tt.wantSize)
+			}
+		})
+	}
+}
+
+func TestServiceRestoreDocument(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       uuid.UUID
+		repoErr  error
+		wantCode string
+	}{
+		{name: "uuid.Nil", id: uuid.Nil, wantCode: apperr.CodeInvalidArgument},
+		{name: "repo ErrNotFound", id: uuid.New(), repoErr: ErrNotFound, wantCode: apperr.CodeNotFound},
+		{name: "repo ErrConflict", id: uuid.New(), repoErr: ErrConflict, wantCode: apperr.CodeConflict},
+		{name: "repo 内部错误", id: uuid.New(), repoErr: errors.New("db down"), wantCode: apperr.CodeInternal},
+		{name: "成功", id: uuid.New()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeDocumentRepository{}
+			if tt.wantCode == "" || tt.repoErr != nil {
+				repo.restoreDocument = func(_ context.Context, id uuid.UUID) (*Document, error) {
+					if id != tt.id {
+						t.Fatalf("repo 收到 id=%v, want %v", id, tt.id)
+					}
+					if tt.repoErr != nil {
+						return nil, tt.repoErr
+					}
+					return &Document{ID: id, Title: "恢复"}, nil
+				}
+			}
+
+			got, err := NewDocumentService(repo).RestoreDocument(context.Background(), tt.id)
+			assertErrorCode(t, err, tt.wantCode)
+			if tt.wantCode == "" && (got == nil || got.ID != tt.id) {
+				t.Fatalf("RestoreDocument = %+v, want id=%v", got, tt.id)
 			}
 		})
 	}

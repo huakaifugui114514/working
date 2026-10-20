@@ -113,11 +113,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET "+collectionsPath+"/{id}", s.handleGetCollection)
 	mux.HandleFunc("PATCH "+collectionsPath+"/{id}", s.handleUpdateCollection)
 	mux.HandleFunc("DELETE "+collectionsPath+"/{id}", s.handleDeleteCollection)
+	mux.HandleFunc("POST "+collectionsPath+"/{id}/restore", s.handleRestoreCollection)
 
 	mux.HandleFunc("POST "+documentsPath, s.handleCreateDocument)
 	mux.HandleFunc("GET "+documentsPath+"/{id}", s.handleGetDocument)
 	mux.HandleFunc("PATCH "+documentsPath+"/{id}", s.handleUpdateDocument)
 	mux.HandleFunc("DELETE "+documentsPath+"/{id}", s.handleDeleteDocument)
+	mux.HandleFunc("POST "+documentsPath+"/{id}/restore", s.handleRestoreDocument)
 
 	mux.HandleFunc("POST "+collectionsPath+"/{id}/documents", s.handleAddDocumentToCollection)
 	mux.HandleFunc("GET "+collectionsPath+"/{id}/documents", s.handleListDocumentsByCollection)

@@ -14,11 +14,12 @@ import (
 // fakeRepository 用函数字段按用例注入行为；没设置的函数被调用时直接 panic，
 // 避免测试悄悄走到没预期的分支。
 type fakeRepository struct {
-	createCollection func(context.Context, string, string) (*Collection, error)
-	getCollection    func(context.Context, uuid.UUID) (*Collection, error)
-	listCollections  func(context.Context, *Cursor, int) ([]*Collection, *Cursor, error)
-	updateCollection func(context.Context, uuid.UUID, CollectionUpdate) (*Collection, error)
-	softDelete       func(context.Context, uuid.UUID) error
+	createCollection  func(context.Context, string, string) (*Collection, error)
+	getCollection     func(context.Context, uuid.UUID) (*Collection, error)
+	listCollections   func(context.Context, *Cursor, int) ([]*Collection, *Cursor, error)
+	updateCollection  func(context.Context, uuid.UUID, CollectionUpdate) (*Collection, error)
+	softDelete        func(context.Context, uuid.UUID) error
+	restoreCollection func(context.Context, uuid.UUID) (*Collection, error)
 }
 
 var _ Repository = (*fakeRepository)(nil)
@@ -56,6 +57,13 @@ func (f *fakeRepository) SoftDeleteCollection(ctx context.Context, id uuid.UUID)
 		panic("unexpected SoftDeleteCollection call")
 	}
 	return f.softDelete(ctx, id)
+}
+
+func (f *fakeRepository) RestoreCollection(ctx context.Context, id uuid.UUID) (*Collection, error) {
+	if f.restoreCollection == nil {
+		panic("unexpected RestoreCollection call")
+	}
+	return f.restoreCollection(ctx, id)
 }
 
 // TestServiceCreateCollection 覆盖创建校验与错误映射；
@@ -476,6 +484,44 @@ func TestServiceUpdateCollection(t *testing.T) {
 			}
 			if gotPatch.Name != nil || gotPatch.Description != nil {
 				t.Fatalf("空 patch 被改成了 %+v", gotPatch)
+			}
+		})
+	}
+}
+
+func TestServiceRestoreCollection(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       uuid.UUID
+		repoErr  error
+		wantCode string
+	}{
+		{name: "uuid.Nil", id: uuid.Nil, wantCode: apperr.CodeInvalidArgument},
+		{name: "repo ErrNotFound", id: uuid.New(), repoErr: ErrNotFound, wantCode: apperr.CodeNotFound},
+		{name: "repo ErrConflict", id: uuid.New(), repoErr: ErrConflict, wantCode: apperr.CodeConflict},
+		{name: "repo 内部错误", id: uuid.New(), repoErr: errors.New("db down"), wantCode: apperr.CodeInternal},
+		{name: "成功", id: uuid.New()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepository{}
+			if tt.wantCode == "" || tt.repoErr != nil {
+				repo.restoreCollection = func(_ context.Context, id uuid.UUID) (*Collection, error) {
+					if id != tt.id {
+						t.Fatalf("repo 收到 id=%v, want %v", id, tt.id)
+					}
+					if tt.repoErr != nil {
+						return nil, tt.repoErr
+					}
+					return &Collection{ID: id, Name: "恢复"}, nil
+				}
+			}
+
+			got, err := NewService(repo).RestoreCollection(context.Background(), tt.id)
+			assertErrorCode(t, err, tt.wantCode)
+			if tt.wantCode == "" && (got == nil || got.ID != tt.id) {
+				t.Fatalf("RestoreCollection = %+v, want id=%v", got, tt.id)
 			}
 		})
 	}

@@ -150,6 +150,22 @@ func (s *Service) SoftDeleteCollection(ctx context.Context, id uuid.UUID) error 
 	return nil
 }
 
+// RestoreCollection 恢复一个已软删的知识库。
+//
+// 契约：uuid.Nil → invalid_argument；不存在/物理删除 → not_found；
+// 本来就是 active → conflict。
+func (s *Service) RestoreCollection(ctx context.Context, id uuid.UUID) (*Collection, error) {
+	if err := validateCollectionID(id); err != nil {
+		return nil, err
+	}
+
+	c, err := s.repo.RestoreCollection(ctx, id)
+	if err != nil {
+		return nil, wrapCollectionRestoreError("恢复知识库失败", err)
+	}
+	return c, nil
+}
+
 // normalizeCollectionName 去首尾空白并校验 rune 长度。
 // 返回值已经 trim，调用方应使用返回值写库，而不是原始入参。
 func normalizeCollectionName(raw string) (string, error) {
@@ -219,4 +235,20 @@ func wrapCollectionRepoError(action string, err error) error {
 		return apperr.Wrap(err, apperr.CodeNotFound, "知识库不存在")
 	}
 	return apperr.Wrap(err, apperr.CodeInternal, action)
+}
+
+// wrapCollectionRestoreError 单独处理 restore 的 409：
+// 行存在但 deleted_at 为 NULL 说明“本来就没删”，不是 not_found。
+func wrapCollectionRestoreError(action string, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return apperr.Wrap(err, apperr.CodeNotFound, "知识库不存在")
+	case errors.Is(err, ErrConflict):
+		return apperr.Wrap(err, apperr.CodeConflict, "知识库未被软删")
+	default:
+		return apperr.Wrap(err, apperr.CodeInternal, action)
+	}
 }

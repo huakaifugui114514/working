@@ -45,6 +45,19 @@ const (
 	softDeleteCollectionStatement = `UPDATE collections
 								SET deleted_at = ?, updated_at = ?
 								WHERE id = ? AND deleted_at IS NULL`
+
+	// restoreCollectionColumns 比 collectionColumns 多 deleted_at：
+	// restore 必须看到软删行，否则无法判断 ErrNotFound / ErrConflict。
+	restoreCollectionColumns = collectionColumns + `, deleted_at`
+
+	restoreCollectionForUpdateStatement = `SELECT ` + restoreCollectionColumns + `
+								FROM collections
+								WHERE id = ?
+								FOR UPDATE`
+
+	restoreCollectionStatement = `UPDATE collections
+								SET deleted_at = NULL, updated_at = ?
+								WHERE id = ?`
 )
 
 // dbExecutor 是 *sql.DB 和 *sql.Conn 的公共子集。
@@ -253,4 +266,55 @@ func (r *MySQLRepository) SoftDeleteCollection(ctx context.Context, id uuid.UUID
 		return fmt.Errorf("id(%x) not found: %w", id[:], ErrNotFound)
 	}
 	return nil
+}
+
+// RestoreCollection 实现 Repository。
+//
+// 先 SELECT ... FOR UPDATE 锁住目标行，再根据 deleted_at 区分：
+// 行不存在 → ErrNotFound；deleted_at 为 NULL → ErrConflict；否则恢复。
+// 这把行锁与 purge 的父行锁是同一个，二者只能有一个先拿到锁。
+func (r *MySQLRepository) RestoreCollection(ctx context.Context, id uuid.UUID) (*Collection, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin restore collection: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	c := &Collection{}
+	if err := tx.QueryRowContext(ctx, restoreCollectionForUpdateStatement, id[:]).Scan(
+		&c.ID,
+		&c.Name,
+		&c.Description,
+		&c.CreatedAt,
+		&c.UpdatedAt,
+		&c.DeletedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("id(%x) not found: %w", id[:], ErrNotFound)
+		}
+		return nil, fmt.Errorf("scan collection for restore: %w", err)
+	}
+	if c.DeletedAt == nil {
+		return nil, fmt.Errorf("id(%x) is not deleted: %w", id[:], ErrConflict)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	res, err := tx.ExecContext(ctx, restoreCollectionStatement, now, id[:])
+	if err != nil {
+		return nil, fmt.Errorf("restore collection: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("restore collection rows affected: %w", err)
+	}
+	if n != 1 {
+		return nil, fmt.Errorf("restore collection affected %d rows, want 1", n)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit restore collection: %w", err)
+	}
+
+	c.DeletedAt = nil
+	c.UpdatedAt = now
+	return c, nil
 }

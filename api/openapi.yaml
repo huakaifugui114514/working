@@ -160,6 +160,29 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+    post:
+      tags: [collections]
+      operationId: restoreCollection
+      summary: 恢复已软删知识库
+      description: |
+        将 `deleted_at` 置 NULL。资源不存在或已被 purge 物理删除返回 404；
+        资源本来就是 active 返回 409。关联行保持原样。
+      responses:
+        '200':
+          description: 恢复后的知识库
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/documents:
     post:
       tags: [documents]
@@ -259,6 +282,29 @@ paths:
           $ref: '#/components/responses/InvalidArgument'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [documents]
+      operationId: restoreDocument
+      summary: 恢复已软删文档
+      description: |
+        将 `deleted_at` 置 NULL。资源不存在或已被 purge 物理删除返回 404；
+        资源本来就是 active 返回 409。关联和正文保持原样。
+      responses:
+        '200':
+          description: 恢复后的文档
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -620,7 +666,7 @@ components:
             $ref: '#/components/schemas/Error'
 
     Conflict:
-      description: 资源已存在（重复添加文档关联）
+      description: 资源状态冲突（重复添加文档关联 / 重复恢复）
       content:
         application/json:
           schema:

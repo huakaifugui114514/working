@@ -17,11 +17,12 @@ import (
 )
 
 type fakeCollectionService struct {
-	create func(context.Context, string, string) (*knowledge.Collection, error)
-	get    func(context.Context, uuid.UUID) (*knowledge.Collection, error)
-	list   func(context.Context, *knowledge.Cursor, int) ([]*knowledge.Collection, *knowledge.Cursor, error)
-	update func(context.Context, uuid.UUID, knowledge.CollectionUpdate) (*knowledge.Collection, error)
-	delete func(context.Context, uuid.UUID) error
+	create  func(context.Context, string, string) (*knowledge.Collection, error)
+	get     func(context.Context, uuid.UUID) (*knowledge.Collection, error)
+	list    func(context.Context, *knowledge.Cursor, int) ([]*knowledge.Collection, *knowledge.Cursor, error)
+	update  func(context.Context, uuid.UUID, knowledge.CollectionUpdate) (*knowledge.Collection, error)
+	delete  func(context.Context, uuid.UUID) error
+	restore func(context.Context, uuid.UUID) (*knowledge.Collection, error)
 }
 
 var _ CollectionService = (*fakeCollectionService)(nil)
@@ -59,6 +60,13 @@ func (f *fakeCollectionService) SoftDeleteCollection(ctx context.Context, id uui
 		panic("unexpected SoftDeleteCollection call")
 	}
 	return f.delete(ctx, id)
+}
+
+func (f *fakeCollectionService) RestoreCollection(ctx context.Context, id uuid.UUID) (*knowledge.Collection, error) {
+	if f.restore == nil {
+		panic("unexpected RestoreCollection call")
+	}
+	return f.restore(ctx, id)
 }
 
 func testCollection(id uuid.UUID) *knowledge.Collection {
@@ -420,4 +428,58 @@ func TestCollectionCursorCodec(t *testing.T) {
 	if _, err := encodeListCursor(nil); err != nil {
 		t.Fatalf("nil cursor 不应报错: %v", err)
 	}
+}
+
+func TestCollectionRestore(t *testing.T) {
+	id := uuid.New()
+
+	t.Run("成功", func(t *testing.T) {
+		var gotID uuid.UUID
+		svc := &fakeCollectionService{
+			restore: func(_ context.Context, got uuid.UUID) (*knowledge.Collection, error) {
+				gotID = got
+				return testCollection(id), nil
+			},
+		}
+		s := newTestServerWithCollections(t, nil, svc)
+		rec := do(t, s, http.MethodPost, collectionsPath+"/"+id.String()+"/restore")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("状态码 = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if gotID != id {
+			t.Fatalf("service 收到 id=%v, want %v", gotID, id)
+		}
+		body := decodeBody[collectionResponse](t, rec)
+		if body.ID != id.String() {
+			t.Fatalf("响应体 = %+v", body)
+		}
+	})
+
+	t.Run("非法 UUID", func(t *testing.T) {
+		s := newTestServerWithCollections(t, nil, &fakeCollectionService{})
+		rec := do(t, s, http.MethodPost, collectionsPath+"/bad/restore")
+		assertHTTPError(t, rec, http.StatusBadRequest, apperr.CodeInvalidArgument)
+	})
+
+	t.Run("本来就没删 409", func(t *testing.T) {
+		svc := &fakeCollectionService{
+			restore: func(context.Context, uuid.UUID) (*knowledge.Collection, error) {
+				return nil, apperr.New(apperr.CodeConflict, "知识库未被软删")
+			},
+		}
+		s := newTestServerWithCollections(t, nil, svc)
+		rec := do(t, s, http.MethodPost, collectionsPath+"/"+id.String()+"/restore")
+		assertHTTPError(t, rec, http.StatusConflict, apperr.CodeConflict)
+	})
+
+	t.Run("不存在 404", func(t *testing.T) {
+		svc := &fakeCollectionService{
+			restore: func(context.Context, uuid.UUID) (*knowledge.Collection, error) {
+				return nil, apperr.New(apperr.CodeNotFound, "知识库不存在")
+			},
+		}
+		s := newTestServerWithCollections(t, nil, svc)
+		rec := do(t, s, http.MethodPost, collectionsPath+"/"+id.String()+"/restore")
+		assertHTTPError(t, rec, http.StatusNotFound, apperr.CodeNotFound)
+	})
 }

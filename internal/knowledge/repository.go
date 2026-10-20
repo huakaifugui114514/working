@@ -55,4 +55,12 @@ type Repository interface {
 	//   - 不物理删除；关联表 collection_documents 的行保留（软删不触发级联，
 	//     列表查询会从 collections 出发过滤，所以残留关联不影响正确性）
 	SoftDeleteCollection(ctx context.Context, id uuid.UUID) error
+
+	// RestoreCollection 恢复一个已软删的知识库：deleted_at 置 NULL，updated_at 刷新。
+	//
+	// 契约：
+	//   - 行不存在（含已被物理删除）→ ErrNotFound
+	//   - 行存在但 deleted_at 已经是 NULL → ErrConflict（本来就没删）
+	//   - 必须用事务 + SELECT ... FOR UPDATE 锁行；restore 与 purge 通过同一把行锁串行化
+	RestoreCollection(ctx context.Context, id uuid.UUID) (*Collection, error)
 }

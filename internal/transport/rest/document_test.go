@@ -12,13 +12,14 @@ import (
 )
 
 type fakeDocumentService struct {
-	create func(context.Context, string, *string, *string, *int64) (*knowledge.Document, error)
-	get    func(context.Context, uuid.UUID) (*knowledge.Document, error)
-	update func(context.Context, uuid.UUID, knowledge.DocumentUpdate) (*knowledge.Document, error)
-	delete func(context.Context, uuid.UUID) error
-	add    func(context.Context, uuid.UUID, uuid.UUID) (*knowledge.CollectionDocument, error)
-	remove func(context.Context, uuid.UUID, uuid.UUID) error
-	list   func(context.Context, uuid.UUID, *knowledge.Cursor, int) ([]*knowledge.CollectionDocument, *knowledge.Cursor, error)
+	create  func(context.Context, string, *string, *string, *int64) (*knowledge.Document, error)
+	get     func(context.Context, uuid.UUID) (*knowledge.Document, error)
+	update  func(context.Context, uuid.UUID, knowledge.DocumentUpdate) (*knowledge.Document, error)
+	delete  func(context.Context, uuid.UUID) error
+	restore func(context.Context, uuid.UUID) (*knowledge.Document, error)
+	add     func(context.Context, uuid.UUID, uuid.UUID) (*knowledge.CollectionDocument, error)
+	remove  func(context.Context, uuid.UUID, uuid.UUID) error
+	list    func(context.Context, uuid.UUID, *knowledge.Cursor, int) ([]*knowledge.CollectionDocument, *knowledge.Cursor, error)
 }
 
 var _ DocumentService = (*fakeDocumentService)(nil)
@@ -49,6 +50,13 @@ func (f *fakeDocumentService) SoftDeleteDocument(ctx context.Context, id uuid.UU
 		panic("unexpected SoftDeleteDocument call")
 	}
 	return f.delete(ctx, id)
+}
+
+func (f *fakeDocumentService) RestoreDocument(ctx context.Context, id uuid.UUID) (*knowledge.Document, error) {
+	if f.restore == nil {
+		panic("unexpected RestoreDocument call")
+	}
+	return f.restore(ctx, id)
 }
 
 func (f *fakeDocumentService) AddDocumentToCollection(ctx context.Context, collectionID, documentID uuid.UUID) (*knowledge.CollectionDocument, error) {
@@ -515,5 +523,59 @@ func TestDocumentRemoveFromCollection(t *testing.T) {
 		rec := do(t, s, http.MethodDelete,
 			collectionsPath+"/"+collectionID.String()+"/documents/not-a-uuid")
 		assertHTTPError(t, rec, http.StatusBadRequest, apperr.CodeInvalidArgument)
+	})
+}
+
+func TestDocumentRestore(t *testing.T) {
+	id := uuid.New()
+
+	t.Run("成功", func(t *testing.T) {
+		var gotID uuid.UUID
+		svc := &fakeDocumentService{
+			restore: func(_ context.Context, got uuid.UUID) (*knowledge.Document, error) {
+				gotID = got
+				return testDocument(id), nil
+			},
+		}
+		s := newTestServerWithServices(t, nil, nil, svc)
+		rec := do(t, s, http.MethodPost, documentsPath+"/"+id.String()+"/restore")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("状态码 = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if gotID != id {
+			t.Fatalf("service 收到 id=%v, want %v", gotID, id)
+		}
+		body := decodeBody[documentResponse](t, rec)
+		if body.ID != id.String() {
+			t.Fatalf("响应体 = %+v", body)
+		}
+	})
+
+	t.Run("非法 UUID", func(t *testing.T) {
+		s := newTestServerWithServices(t, nil, nil, &fakeDocumentService{})
+		rec := do(t, s, http.MethodPost, documentsPath+"/bad/restore")
+		assertHTTPError(t, rec, http.StatusBadRequest, apperr.CodeInvalidArgument)
+	})
+
+	t.Run("本来就没删 409", func(t *testing.T) {
+		svc := &fakeDocumentService{
+			restore: func(context.Context, uuid.UUID) (*knowledge.Document, error) {
+				return nil, apperr.New(apperr.CodeConflict, "文档未被软删")
+			},
+		}
+		s := newTestServerWithServices(t, nil, nil, svc)
+		rec := do(t, s, http.MethodPost, documentsPath+"/"+id.String()+"/restore")
+		assertHTTPError(t, rec, http.StatusConflict, apperr.CodeConflict)
+	})
+
+	t.Run("不存在 404", func(t *testing.T) {
+		svc := &fakeDocumentService{
+			restore: func(context.Context, uuid.UUID) (*knowledge.Document, error) {
+				return nil, apperr.New(apperr.CodeNotFound, "文档不存在")
+			},
+		}
+		s := newTestServerWithServices(t, nil, nil, svc)
+		rec := do(t, s, http.MethodPost, documentsPath+"/"+id.String()+"/restore")
+		assertHTTPError(t, rec, http.StatusNotFound, apperr.CodeNotFound)
 	})
 }

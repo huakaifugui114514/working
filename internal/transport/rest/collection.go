@@ -36,6 +36,7 @@ type CollectionService interface {
 	ListCollections(ctx context.Context, cursor *knowledge.Cursor, limit int) ([]*knowledge.Collection, *knowledge.Cursor, error)
 	UpdateCollection(ctx context.Context, id uuid.UUID, patch knowledge.CollectionUpdate) (*knowledge.Collection, error)
 	SoftDeleteCollection(ctx context.Context, id uuid.UUID) error
+	RestoreCollection(ctx context.Context, id uuid.UUID) (*knowledge.Collection, error)
 }
 
 // collectionResponse 是知识库的对外表示。
@@ -172,6 +173,21 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRestoreCollection 处理 POST /api/v1/collections/{id}/restore。
+func (s *Server) handleRestoreCollection(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+
+	c, err := s.collections.RestoreCollection(r.Context(), id)
+	if err != nil {
+		s.handleServiceError(w, r, err)
+		return
+	}
+	respond.JSON(w, s.logger, http.StatusOK, collectionToResponse(c))
 }
 
 // pathUUID 解析路径参数里的 UUID；非法值直接写 400。

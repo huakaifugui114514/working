@@ -152,6 +152,22 @@ func (s *DocumentService) SoftDeleteDocument(ctx context.Context, id uuid.UUID) 
 	return nil
 }
 
+// RestoreDocument 恢复一个已软删的文档。
+//
+// 契约：uuid.Nil → invalid_argument；不存在/物理删除 → not_found；
+// 本来就是 active → conflict。
+func (s *DocumentService) RestoreDocument(ctx context.Context, id uuid.UUID) (*Document, error) {
+	if err := validateDocumentID(id); err != nil {
+		return nil, err
+	}
+
+	d, err := s.repo.RestoreDocument(ctx, id)
+	if err != nil {
+		return nil, wrapDocumentRepoErrorWithConflict("恢复文档失败", "文档不存在", "文档未被软删", err)
+	}
+	return d, nil
+}
+
 // AddDocumentToCollection 把已有文档加入知识库。
 //
 // 契约：collection / document 不存在或已软删 → not_found；重复添加 → conflict。
@@ -295,6 +311,12 @@ func validateUUIDField(field string, id uuid.UUID) error {
 // ErrNotFound / ErrConflict 是有明确业务含义的冲突，分别映射 404 / 409；
 // 其他错误映射为 internal_error，真实原因保留在 Cause 里，只进日志不出接口。
 func wrapDocumentRepoError(action, notFoundMessage string, err error) error {
+	return wrapDocumentRepoErrorWithConflict(action, notFoundMessage, "文档已在该知识库中", err)
+}
+
+// wrapDocumentRepoErrorWithConflict 允许调用方指定 409 的提示语：
+// 添加关联说“文档已在该知识库中”，恢复文档说“文档未被软删”。
+func wrapDocumentRepoErrorWithConflict(action, notFoundMessage, conflictMessage string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -302,7 +324,7 @@ func wrapDocumentRepoError(action, notFoundMessage string, err error) error {
 	case errors.Is(err, ErrNotFound):
 		return apperr.Wrap(err, apperr.CodeNotFound, notFoundMessage)
 	case errors.Is(err, ErrConflict):
-		return apperr.Wrap(err, apperr.CodeConflict, "文档已在该知识库中")
+		return apperr.Wrap(err, apperr.CodeConflict, conflictMessage)
 	default:
 		return apperr.Wrap(err, apperr.CodeInternal, action)
 	}

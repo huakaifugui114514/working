@@ -65,6 +65,16 @@ const (
 								SET updated_at = ?, deleted_at = ?
 								WHERE id = ? AND deleted_at IS NULL`
 
+	// restore 需要看到软删行，所以这里不能复用带 deleted_at IS NULL 的 get 语句。
+	restoreDocumentForUpdateStatement = `SELECT ` + documentColumns + `
+								FROM documents
+								WHERE id = ?
+								FOR UPDATE`
+
+	restoreDocumentStatement = `UPDATE documents
+								SET deleted_at = NULL, updated_at = ?
+								WHERE id = ?`
+
 	listDocumentsByCollectionWithoutCursor = `SELECT ` + documentColumnsForJoin + `, cd.created_at
 								FROM collection_documents cd
 								JOIN documents d ON d.id = cd.document_id
@@ -247,6 +257,47 @@ func (r *MySQLRepository) SoftDeleteDocument(ctx context.Context, id uuid.UUID) 
 		return fmt.Errorf("document id(%x) not found: %w", id[:], ErrNotFound)
 	}
 	return nil
+}
+
+// RestoreDocument 实现 DocumentRepository。
+//
+// 先用 SELECT ... FOR UPDATE 锁住目标行，再按 deleted_at 区分：
+// 不存在 → ErrNotFound；本来就是 active → ErrConflict；否则恢复。
+// 该行锁与 purge 删除文档时使用的是同一把锁，二者不会同时成功。
+func (r *MySQLRepository) RestoreDocument(ctx context.Context, id uuid.UUID) (*Document, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin restore document: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	d, err := scanDocument(tx.QueryRowContext(ctx, restoreDocumentForUpdateStatement, id[:]))
+	if err != nil {
+		return nil, err
+	}
+	if d.DeletedAt == nil {
+		return nil, fmt.Errorf("document id(%x) is not deleted: %w", id[:], ErrConflict)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	res, err := tx.ExecContext(ctx, restoreDocumentStatement, now, id[:])
+	if err != nil {
+		return nil, fmt.Errorf("restore document id(%x): %w", id[:], err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("restore document rows affected: %w", err)
+	}
+	if n != 1 {
+		return nil, fmt.Errorf("restore document affected %d rows, want 1", n)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit restore document: %w", err)
+	}
+
+	d.DeletedAt = nil
+	d.UpdatedAt = now
+	return d, nil
 }
 
 // AddDocumentToCollection 实现 DocumentRepository。

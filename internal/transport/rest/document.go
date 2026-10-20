@@ -22,6 +22,7 @@ type DocumentService interface {
 	GetDocument(ctx context.Context, id uuid.UUID) (*knowledge.Document, error)
 	UpdateDocument(ctx context.Context, id uuid.UUID, patch knowledge.DocumentUpdate) (*knowledge.Document, error)
 	SoftDeleteDocument(ctx context.Context, id uuid.UUID) error
+	RestoreDocument(ctx context.Context, id uuid.UUID) (*knowledge.Document, error)
 	AddDocumentToCollection(ctx context.Context, collectionID, documentID uuid.UUID) (*knowledge.CollectionDocument, error)
 	RemoveDocumentFromCollection(ctx context.Context, collectionID, documentID uuid.UUID) error
 	ListDocumentsByCollection(ctx context.Context, collectionID uuid.UUID, cursor *knowledge.Cursor, limit int) ([]*knowledge.CollectionDocument, *knowledge.Cursor, error)
@@ -168,6 +169,21 @@ func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRestoreDocument 处理 POST /api/v1/documents/{id}/restore。
+func (s *Server) handleRestoreDocument(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+
+	d, err := s.documents.RestoreDocument(r.Context(), id)
+	if err != nil {
+		s.handleServiceError(w, r, err)
+		return
+	}
+	respond.JSON(w, s.logger, http.StatusOK, documentToResponse(d))
 }
 
 // handleAddDocumentToCollection 处理 POST /api/v1/collections/{id}/documents。
