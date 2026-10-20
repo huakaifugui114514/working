@@ -2,9 +2,9 @@
 
 AI Native 企业知识库与 Agent 平台（Go 服务端）。
 
-> **当前状态：M2 collections CRUD 已可运行。**
-> 配置、日志、HTTP 中间件、`/healthz`、优雅退出，以及知识库的创建/查询/分页/更新/软删**已实现并有真实验收**（见「快速开始」与「知识库 CRUD」）。
-> 文档管理、检索、Agent 尚未实现——请不要按本文部署到生产。
+> **当前状态：M3 documents CRUD + 软删清理已实现，collections + documents 可运行。**
+> 配置、日志、HTTP 中间件、`/healthz`、优雅退出，知识库与文档的创建/查询/分页/更新/软删、文档关联，以及 `cmd/purge` 分批物理清理**已实现并有真实验收**（见「快速开始」「知识库 CRUD」「文档与关联 CRUD」「软删物理清理」）。
+> 检索、Agent 尚未实现——请不要按本文部署到生产。
 
 ## 技术栈
 
@@ -105,7 +105,7 @@ curl -s "localhost:18080/debug/sleep?d=3s" &
 - 生产环境（k8s / `docker stop`）发的是 **SIGTERM**，服务同时监听 SIGINT 与 SIGTERM。
 - `/debug/sleep` **只在 `dev` 环境注册**，生产环境该路径返回 404。
 
-## 本地数据库（M2 起）
+## 本地数据库
 
 ```bash
 cd deploy
@@ -139,6 +139,49 @@ KF_DATABASE_PASSWORD="$MYSQL_PASSWORD" \
 go run ./cmd/migrate up
 ```
 
+### 软删物理清理（purge）
+
+`DELETE /api/v1/...` 只做软删；`cmd/purge` 负责在保留期（默认 30 天）后物理删除。
+它**不在请求路径上运行**，建议由 cron / Kubernetes CronJob 在低峰期调用：
+
+```bash
+set -a; . deploy/.env; set +a
+export KF_DATABASE_HOST=127.0.0.1 KF_DATABASE_PORT="${MYSQL_PORT:-3306}" \
+       KF_DATABASE_NAME="$MYSQL_DATABASE" KF_DATABASE_USER="$MYSQL_USER" \
+       KF_DATABASE_PASSWORD="$MYSQL_PASSWORD"
+
+# 先看会删多少行，不执行 DELETE
+go run ./cmd/purge -dry-run
+
+# 再真正清理；batch / interval 可按数据库规格调整
+go run ./cmd/purge -batch 1000 -interval 1s
+```
+
+| flag | 默认值 | 说明 |
+|---|---|---|
+| `-retention` | `720h` | 软删后保留多久才物理删除（30 天） |
+| `-batch` | `1000` | 每批处理的关联/父行数；建议 500–2000 |
+| `-interval` | `1s` | 批间 sleep；`0` 仅建议测试 |
+| `-dry-run` | `false` | 只统计，不删除 |
+| `-timeout` | `30m` | 单次运行上限，防止异常数据让任务无限跑 |
+
+清理顺序：过期 document 的关联 → 过期 collection 的关联 → 已无关联的过期 document →
+已无关联的过期 collection。重复执行是幂等的；0002 迁移为它补了
+`(deleted_at, id)` 索引，取批按 `ORDER BY deleted_at, id`；正常数据量下走索引、避免 filesort。
+
+真实 MySQL 8.4 验收（插入 2 个过期父资源 + 2 个孤儿行，batch=1）：
+
+```text
+go run ./cmd/purge -dry-run -batch 1 -interval 0
+{"time":"2026-10-20T13:45:45.060557994+08:00","level":"INFO","msg":"purge dry-run 完成","associations":2,"documents":2,"collections":2}
+
+go run ./cmd/purge -batch 1 -interval 0
+{"time":"2026-10-20T13:45:45.124931459+08:00","level":"INFO","msg":"purge 完成","associations":2,"documents":2,"collections":2,"batches":3}
+{"time":"2026-10-20T13:45:45.124940146+08:00","level":"INFO","msg":"purge 统计","associations":2,"documents":2,"collections":2,"batches":3,"dry_run":false,"finished_at":"2026-10-20T05:45:45.124938382Z"}
+
+验证：过期/孤儿行 count 全为 0；活跃 collection/document 仍为 1；关联已清空。
+```
+
 ## 配置
 
 加载优先级（高者覆盖低者）：**内置默认值 < `configs/config.yaml` < 环境变量（`KF_` 前缀）**。
@@ -168,9 +211,17 @@ go run ./cmd/migrate up
 | GET | `/api/v1/collections/{id}` | 按 id 查询 | ✅ |
 | PATCH | `/api/v1/collections/{id}` | PATCH 更新（只改出现的字段） | ✅ |
 | DELETE | `/api/v1/collections/{id}` | 软删 | ✅ |
+| POST | `/api/v1/documents` | 创建文档元数据 | ✅ |
+| GET | `/api/v1/documents/{id}` | 按 id 查询文档 | ✅ |
+| PATCH | `/api/v1/documents/{id}` | PATCH 更新（可空字段支持“缺省 / null / 值”三态） | ✅ |
+| DELETE | `/api/v1/documents/{id}` | 软删文档（关联行保留） | ✅ |
+| POST | `/api/v1/collections/{id}/documents` | 添加文档关联；重复添加 → 409 | ✅ |
+| GET | `/api/v1/collections/{id}/documents` | 按 `added_at` 分页列出文档 | ✅ |
+| DELETE | `/api/v1/collections/{id}/documents/{document_id}` | 只移除关联，不删文档 | ✅ |
 
-完整契约见 [`api/openapi.yaml`](api/openapi.yaml)；路径、游标和 PATCH 语义的取舍见
-[ADR 003](docs/adr/003-collections-api.md)。
+完整契约见 [`api/openapi.yaml`](api/openapi.yaml)；collections 的路径、游标和 PATCH 语义见
+[ADR 003](docs/adr/003-collections-api.md)，documents 的关联语义与软删保留策略见
+[ADR 004](docs/adr/004-documents-api.md)。
 
 错误码分两层：**业务码**在 `internal/apperr`（如 `invalid_argument`），**传输层码**在 `internal/transport/rest/respond`（如 `route_not_found`），映射只在 `respond.StatusForCode` 一处。
 
@@ -206,15 +257,78 @@ curl -sS -X PATCH "$BASE/<id>" -H 'Content-Type: application/json' \
 curl -sS -i -X DELETE "$BASE/<id>"
 ```
 
+### 文档与关联 CRUD
+
+```bash
+DOC=http://127.0.0.1:18080/api/v1/documents
+COL=http://127.0.0.1:18080/api/v1/collections
+
+# 创建文档：title 会 trim；source_uri/mime_type 传 null、空串或纯空白都存 NULL
+curl -sS -X POST "$DOC" -H 'Content-Type: application/json' \
+  -d '{"title":"  设计文档  ","source_uri":"s3://knowflow/docs/design.pdf","mime_type":"application/pdf","size_bytes":1024}'
+
+# PATCH：title:null/缺省 = 不改；source_uri:null、""、纯空白 = 清空为 NULL
+curl -sS -X PATCH "$DOC/<did>" -H 'Content-Type: application/json' \
+  -d '{"title":"新标题"}'
+curl -sS -X PATCH "$DOC/<did>" -H 'Content-Type: application/json' \
+  -d '{"source_uri":null,"size_bytes":null}'
+
+# 关联：201 + Location；重复添加返回 409
+curl -sS -i -X POST "$COL/<cid>/documents" -H 'Content-Type: application/json' \
+  -d '{"document_id":"<did>"}'
+
+# 列表：items[].document + added_at；next_cursor=null 表示最后一页
+curl -sS "$COL/<cid>/documents?limit=20"
+
+# 只移除关联，文档本身还在；重复移除返回 404。
+# 父资源（collection/document）已软删不阻塞移除：关联行还在就返回 204，便于清理。
+curl -sS -i -X DELETE "$COL/<cid>/documents/<did>"
+
+# 软删文档：204；之后 GET 返回 404，所有 collection 列表都不再显示
+curl -sS -i -X DELETE "$DOC/<did>"
+```
+
+本地 MySQL 8.4 + `bin/apid` 的真实验收摘录（2026-10-20，完整请求体见上面的 curl）：
+
+```text
+POST /api/v1/documents
+201 {"id":"01a157ad-c921-76d4-9c84-bdd43dcec532","title":"设计文档","source_uri":"s3://knowflow/docs/design.pdf","mime_type":"application/pdf","size_bytes":1024,"created_at":"2026-10-20T04:59:29.441Z","updated_at":"2026-10-20T04:59:29.441Z"}
+
+PATCH /api/v1/documents/{id} {"title":"新标题"}
+200 {"id":"01a157ad-c921-76d4-9c84-bdd43dcec532","title":"新标题","source_uri":"s3://knowflow/docs/design.pdf","mime_type":"application/pdf","size_bytes":1024,...}
+
+PATCH /api/v1/documents/{id} {"source_uri":null,"size_bytes":null}
+200 {"id":"01a157ad-c921-76d4-9c84-bdd43dcec532","title":"新标题","source_uri":null,"mime_type":"application/pdf","size_bytes":null,...}
+
+POST /api/v1/collections/{id}/documents
+201 {"document":{"id":"01a157ad-c921-76d4-9c84-bdd43dcec532",...},"added_at":"2026-10-20T04:59:29.506Z"}
+
+POST /api/v1/collections/{id}/documents（重复）
+409 {"error":{"code":"conflict","message":"文档已在该知识库中"}}
+
+GET /api/v1/collections/{id}/documents?limit=20
+200 {"items":[{"document":{"id":"01a157ad-c921-76d4-9c84-bdd43dcec532",...},"added_at":"..."}],"next_cursor":null}
+
+DELETE /api/v1/collections/{id}/documents/{did}   → 204
+DELETE 同上（重复）                              → 404 {"error":{"code":"not_found","message":"关联不存在"}}
+DELETE /api/v1/documents/{id}                    → 204
+GET    /api/v1/documents/{id}（软删后）           → 404 {"error":{"code":"not_found","message":"文档不存在"}}
+```
+
+`GET /collections/{id}/documents` 的 SQL 已用真实 MySQL `EXPLAIN` 验证：
+驱动表走 `idx_collection_created`（`Using index` + `Backward index scan`，无 filesort），
+`documents` 走主键 `eq_ref`，符合 keyset 分页的索引设计。
+
 ## 目录结构
 
 ```
-cmd/         可执行程序入口（apid / migrate，只做装配）
+cmd/         可执行程序入口（apid / migrate / purge，只做装配）
 internal/    私有代码，外部模块不可导入
   config/        配置加载与校验
   apperr/        业务错误与错误码
   database/      连接池、DSN、迁移连接
   knowledge/     知识库领域模型、repository、service
+  purge/         软删数据的分批物理清理
   observability/ 日志与 trace_id
   transport/     HTTP 传输层（rest + middleware + respond）
   version/       构建期注入的版本信息
@@ -244,16 +358,21 @@ ok  internal/config
 ok  internal/database
 ok  internal/knowledge
 ok  internal/observability
+ok  internal/purge
 ok  internal/transport/rest
 ok  internal/transport/rest/middleware
 ok  internal/transport/rest/respond
 ok  migrations
 ```
 
-repository 的集成测试单独跑（需要本地 MySQL）：
+repository / purge 的集成测试单独跑（需要本地 MySQL；临时表不会碰真实数据）：
 
 ```bash
-go test -race -tags=integration -count=1 ./internal/knowledge
+set -a; . deploy/.env; set +a
+KF_DATABASE_HOST=127.0.0.1 KF_DATABASE_PORT="${MYSQL_PORT:-3306}" \
+KF_DATABASE_NAME="$MYSQL_DATABASE" KF_DATABASE_USER="$MYSQL_USER" \
+KF_DATABASE_PASSWORD="$MYSQL_PASSWORD" \
+go test -race -tags=integration -count=1 ./internal/knowledge ./internal/purge
 ```
 
 ## 实现状态
@@ -262,17 +381,20 @@ go test -race -tags=integration -count=1 ./internal/knowledge
 - [x] `internal/apperr` — 业务错误 `Error{Code, Message, Cause}` + `errors.Is/As` 穿透
 - [x] `internal/observability` — `slog` logger（json/text）+ `trace_id` 自动注入
 - [x] `internal/database` — DSN / 迁移 DSN / 连接池 / 集成测试
-- [x] `migrations` — `0001_init`（collections / documents / collection_documents）+ `cmd/migrate`
-- [x] `internal/knowledge` — 领域模型、repository（keyset 分页 / PATCH / 软删）、service 校验与错误翻译
+- [x] `migrations` — `0001_init`（collections / documents / collection_documents）+ `0002_purge_indexes` + `cmd/migrate`
+- [x] `internal/knowledge` — 领域模型、collections/documents repository（keyset 分页 / PATCH / 软删 / 关联）、service 校验与错误翻译
 - [x] `internal/transport/rest/collection.go` — collections 五个 HTTP 端点 + cursor 编解码
+- [x] `internal/transport/rest/document.go` — documents CRUD + 关联的添加/列表/移除 + PATCH 三态解码
 - [x] `internal/transport/rest/respond` — 统一 JSON 响应与错误体（5xx 不泄露内部信息）
 - [x] `internal/transport/rest/middleware` — RequestID / InFlight / AccessLog / Recover
 - [x] `internal/transport/rest` — 路由装配、`/healthz`、统一 404、优雅退出
 - [x] `cmd/apid` — 配置 → 日志 → DB → repository → service → 信号 → 优雅退出
-- [x] `api/openapi.yaml` — collections API 契约
+- [x] `internal/purge` + `cmd/purge` — 分批物理清理、dry-run、批间 sleep、0002 索引
+- [x] `api/openapi.yaml` — collections + documents API 契约
 - [x] 本地 MySQL 8 编排（`deploy/docker-compose.yml` + 真实健康检查）
 - [x] 单元测试 + repository 集成测试 + 竞态检测门禁
-- [ ] 文档管理（documents / collection_documents 的 service + handler）
+- [x] 文档管理（documents / collection_documents 的 repository + service + handler）
+- [x] 软删物理清理（`cmd/purge`，默认保留 30 天，见 ADR 004）
 - [ ] 检索 / Agent 接口
 
 ## 协作与规范

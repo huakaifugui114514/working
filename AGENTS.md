@@ -249,7 +249,8 @@
 - ✅ 迁移接入（`40b8c1c`）：`migrations/embed.go`（`//go:embed *.sql`）+ `cmd/migrate`
   （up / version / down -y / force <n>；`iofs` + `mysql.WithInstance`，迁移连接用 `MigrateDSN`）。
   实测：up → version=1；再 up → 无需迁移；down -y → 只剩 schema_migrations；再 up 恢复；
-  人为 dirty=1 → version 报错退出 → force 1 修复。`migrations/embed_test.go` 钉住文件名规则
+  人为 dirty=1 → version 报错退出 → force 1 修复。`migrations/embed_test.go` 钉住文件名规则。
+  0002_purge_indexes 已追加并在真实 MySQL 8.4 上应用，version=2、dirty=false
 - ✅ repository（`internal/knowledge`，`e205616`）：model.go（Collection/Cursor/PATCH 语义）、
   repository.go（接口）、mysql.go（Create / Get / List keyset / Update PATCH / SoftDelete）+ 集成测试。
   关键边界：cursor.ID 传 `id[:]`、分页 `limit+1`、PATCH 用事务 + `FOR UPDATE`、软删看 `RowsAffected`
@@ -258,7 +259,19 @@
 - ✅ HTTP handler（`internal/transport/rest/collection.go`）：`/api/v1/collections` 五个端点、
   cursor base64url（8B ms + 16B UUID）、`httptest` 覆盖 201/200/204/400/404/500 与客户端取消
 - ✅ `cmd/apid` 装配 DB → repository → service → server；启动连不上 MySQL 直接失败
-- ✅ M2 collections CRUD 完成；⬜ M3：documents / collection_documents 的 service + handler，检索 / Agent 后续
+- ✅ M2 collections CRUD 完成
+- ✅ M3 documents（本轮）：`document_repository.go` 契约（`77e118d`）+ `mysql_documents.go`
+  （Create/Get/Update PATCH/SoftDelete + 关联增删 + keyset 列表；1062 → `ErrConflict`）+
+  `document_service.go`（title/source_uri/mime_type/size_bytes 校验、404/409 映射，单测覆盖率 100%）+
+  `rest/document.go`（documents 4 个端点 + 关联 3 个端点，PATCH 三态解码）。
+  集成测试覆盖 CRUD / 重复关联 / 软删过滤 / 同毫秒分页；真实 MySQL `EXPLAIN` 走
+  `idx_collection_created`（Using index + Backward index scan，无 filesort）。
+  add 关联只读 collection，用 `FOR SHARE` 共享锁；document 仍 `FOR UPDATE`（软删互斥）
+- ✅ 软删物理清理（本轮）：`migrations/0002_purge_indexes`（`(deleted_at, id)`）+
+  `internal/purge`（按关联行分批、NOT EXISTS 防孤儿、dry-run、批间 sleep、幂等）+
+  `cmd/purge`（retention / batch / interval / dry-run / timeout）。真实 MySQL 验收：
+  dry-run 与实删统计一致，过期/孤儿行清零，保留期内数据与活跃关联保留
+- ⬜ 下一步：检索 / Agent
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -273,6 +286,8 @@ make run                   # 本地起服务（默认 :8080；需要 MySQL + KF_
 make build                 # 编译到 bin/apid，版本号由 git + ldflags 注入
 KF_SERVER_ADDR=:18080 ./bin/apid   # 环境变量覆盖配置（验证配置分层）
 curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / 在途请求数
+go run ./cmd/migrate up             # 应用迁移（当前 version=2）
+go run ./cmd/purge -dry-run         # 软删清理预演；确认后去掉 -dry-run
 ```
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
@@ -291,7 +306,9 @@ curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / �
 
 3. ✅ M1 全部完成（config / observability / middleware / rest / cmd/apid，服务可运行）。
    ✅ M2 collections CRUD 完成：database → migrate/0001 → repository → service → handler → cmd/apid。
-   ⬜ **M3 下一步**：documents / collection_documents（repository + service + handler），再做检索。
+   ✅ M3 documents 完成：repository + service + handler + 集成测试 + 真实 curl/EXPLAIN 验收。
+   ✅ 软删清理完成：0002 索引 + `internal/purge` + `cmd/purge`，真实 MySQL 分批验收。
+   ⬜ **下一步**：检索 / Agent。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备

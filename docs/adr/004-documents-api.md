@@ -1,20 +1,21 @@
 # ADR 004：documents API 与软删清理策略
 
 - **状态**：已接受（M3 契约）
+- **实现状态**：已实现（2026-10-20；repository / service / handler + 集成测试）
 - **日期**：2026-10-18
 - **决策者**：项目所有者
 - **相关规则**：`AGENTS.md` §3.1（接口契约由用户定）、§1.2（测试与证据）
 
 ## 背景
 
-M2 已完成 collections CRUD。M3 要接入 `documents` 与 `collection_documents`：
+M2 已完成 collections CRUD。M3 接入 `documents` 与 `collection_documents`：
 
 - 一篇文档可能属于多个知识库；
 - 列表排序键是关联表的 `added_at`，不是文档的 `created_at`；
 - 重复添加关联、删除不存在的关联需要明确的 HTTP 语义；
 - 软删后的行何时物理删除，需要可执行的保留策略。
 
-本 ADR 只定契约和清理策略，不代表 M3 代码已实现。
+本 ADR 定契约和清理策略；实现进度以 README 的「实现状态」为准。
 
 ## 决定
 
@@ -119,29 +120,32 @@ Go map 扩容是“不做不行”；软删清理是“可以延后做”。把 
 3. 先清关联，再清文档/集合：
 
 ```sql
--- 1) 清指向过期文档的关联
-DELETE cd FROM collection_documents cd
-JOIN (
-  SELECT id FROM documents
-  WHERE deleted_at < ?
-  ORDER BY id
-  LIMIT 1000
-) d ON d.id = cd.document_id;
+-- 1) 按"关联行"分批取过期 document 的关联，避免一个 document 属于很多 collection
+SELECT cd.collection_id, cd.document_id
+FROM collection_documents cd
+JOIN documents d ON d.id = cd.document_id
+WHERE d.deleted_at IS NOT NULL AND d.deleted_at < ?
+ORDER BY cd.document_id, cd.collection_id
+LIMIT ?;
 
--- 2) 删没有关联的过期文档
-DELETE FROM documents
-WHERE deleted_at < ?
-  AND NOT EXISTS (
-    SELECT 1 FROM collection_documents cd WHERE cd.document_id = documents.id
-  )
-ORDER BY id
-LIMIT 1000;
+DELETE FROM collection_documents
+WHERE (collection_id, document_id) IN ((?, ?), (?, ?), ...);
+
+-- 2) 过期 collection 的关联同理（按 cd.collection_id 取批）
+
+-- 3) 再过期的 document / collection：此时已无关联，按 (deleted_at, id) 取批
+SELECT id FROM documents
+WHERE deleted_at IS NOT NULL AND deleted_at < ?
+  AND NOT EXISTS (SELECT 1 FROM collection_documents cd WHERE cd.document_id = documents.id)
+ORDER BY deleted_at, id
+LIMIT ?;
 ```
 
-4. 需要新迁移加 `(deleted_at, id)` 索引；0001 已应用，不能改。
+4. 需要新迁移加 `(deleted_at, id)` 索引；0001 已应用，不能改。**0002 已追加该索引**。
 5. 高并发下“purge 删文档 vs 新加关联”要加行锁或对账：
-   - 添加关联时在事务里 `SELECT ... FROM documents WHERE id=? AND deleted_at IS NULL FOR UPDATE`；
-   - purge 也锁同一行；或接受最终一致，定期清孤儿关联。
+   - 添加关联时在事务里对 collection 加 `FOR SHARE`（只读、允许多个 add 并发），对 document 加 `FOR UPDATE` 确认存在（document 会被软删，需要排他锁与软删互斥）；
+   - purge 的 DELETE 会拿排他行锁；两者冲突时由 InnoDB 串行化；
+   - 删除 document 的 SQL 再次带 `NOT EXISTS`，防止 SELECT 与 DELETE 之间新增关联造成孤儿行。
 
 ## 后果
 
@@ -149,16 +153,24 @@ LIMIT 1000;
 - `GET /collections/{id}/documents` 必须 join documents 并过滤 `d.deleted_at IS NULL`。
 - `POST /collections/{id}/documents` 要区分：collection/document 不存在 → 404；关联已存在 → 409。
 - `DELETE` 关联不存在 → 404；删除文档是软删，返回 204。
-- M3 不实现物理 purge；先保留 30 天策略和 purge 设计，后续加 `cmd/purge`/定时任务。
-- 新增 `(deleted_at, id)` 索引需要新迁移，不能改 0001。
+- 移除关联只检查关联行是否存在；父资源（collection/document）已软删不阻塞，仍返回 204。
+  父行物理删除前 purge 会先清关联，因此正常路径不会出现“关联还在、父行已物理消失”。
+- 物理 purge 已实现：`internal/purge`（分批 + 批间 sleep + dry-run）+ `cmd/purge`；
+  由 cron / CronJob 调用，不挂请求路径。
+- 0002 已追加 `(deleted_at, id)` 索引；purge 取批用 `ORDER BY deleted_at, id`，
+  与索引顺序一致，避免 filesort。
+- `source_uri` / `mime_type` 的空串和纯空白在 service 层折叠为 SQL NULL；
+  `title: null` 视为“不改”（title 是 NOT NULL）。
 
 ## 验证
 
 - 契约：`api/openapi.yaml` 已包含 `Document` / `DocumentCreate` / `DocumentUpdate` / `CollectionDocument` 与 5 个新端点。
-- 实现后：
+- 已实现：
   - `httptest` 覆盖 201/204/400/404/409；
   - repository 集成测试覆盖重复添加 1062 → 409、移除不存在 → 404、软删文档不出现在 collection 列表；
-  - 真实 `curl` 走通 create document / add association / list / remove association / soft delete。
+  - 真实 `curl` 走通 create document / add association / list / remove association / soft delete；
+  - `internal/purge` 集成测试覆盖 dry-run、分批、关联清理、保留期内数据保留、幂等；
+  - 真实 MySQL `EXPLAIN` 验证 purge 取批走 `idx_deleted_id`（range + Using index，无 filesort）。
 
 ## 参考
 
