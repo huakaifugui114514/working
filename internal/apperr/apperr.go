@@ -18,7 +18,7 @@ import (
 const (
 	CodeInvalidArgument = "invalid_argument" // → 400
 	CodeNotFound        = "not_found"        // → 404，资源不存在
-	CodeConflict        = "conflict"         // → 409，预留：并发/唯一性冲突
+	CodeConflict        = "conflict"         // → 409，资源冲突（如重复添加文档关联）
 	CodeInternal        = "internal_error"   // → 500，兜底
 )
 

@@ -67,9 +67,12 @@ func run() error {
 	}()
 
 	// 5. 装配依赖：repository → service → HTTP server。
-	//    main 只做装配，业务规则在 knowledge.Service，SQL 在 MySQLRepository。
-	collectionService := knowledge.NewService(knowledge.NewMySQLRepository(db))
-	svc := rest.New(*cfg, logger, version.Get(), collectionService)
+	//    main 只做装配，业务规则在 knowledge.Service / DocumentService，SQL 在 MySQLRepository。
+	//    collections 与 documents 共用同一个连接池；仓储本身无状态，多建一个实例没有额外连接。
+	repo := knowledge.NewMySQLRepository(db)
+	collectionService := knowledge.NewService(repo)
+	documentService := knowledge.NewDocumentService(repo)
+	svc := rest.New(*cfg, logger, version.Get(), collectionService, documentService)
 
 	// 6. 信号 ctx：Ctrl+C 是 SIGINT，而 k8s / docker stop 发的是 SIGTERM。
 	//    只监听 SIGINT，线上就会被 SIGKILL 硬杀，优雅退出白写。

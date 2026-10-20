@@ -219,7 +219,7 @@ func TestCollectionList(t *testing.T) {
 		if len(body.Items) != 1 || body.NextCursor == nil {
 			t.Fatalf("响应 = %+v", body)
 		}
-		decoded, err := decodeCollectionCursor(*body.NextCursor)
+		decoded, err := decodeListCursor(*body.NextCursor)
 		if err != nil {
 			t.Fatalf("解码 next_cursor: %v", err)
 		}
@@ -239,7 +239,7 @@ func TestCollectionList(t *testing.T) {
 		}
 		s := newTestServerWithCollections(t, nil, svc)
 
-		encoded, err := encodeCollectionCursor(next)
+		encoded, err := encodeListCursor(next)
 		if err != nil {
 			t.Fatalf("编码 cursor: %v", err)
 		}
@@ -398,26 +398,26 @@ func TestCollectionCursorCodec(t *testing.T) {
 		ID:        uuid.MustParse("01a14b3e-1b29-759b-b7c6-a9094bab7487"),
 	}
 
-	encoded, err := encodeCollectionCursor(cursor)
+	encoded, err := encodeListCursor(cursor)
 	if err != nil {
-		t.Fatalf("encodeCollectionCursor: %v", err)
+		t.Fatalf("encodeListCursor: %v", err)
 	}
 	if len(encoded) != 32 {
 		t.Fatalf("cursor 长度 = %d, want 32（24 字节 base64url）", len(encoded))
 	}
 
-	decoded, err := decodeCollectionCursor(encoded)
+	decoded, err := decodeListCursor(encoded)
 	if err != nil {
-		t.Fatalf("decodeCollectionCursor: %v", err)
+		t.Fatalf("decodeListCursor: %v", err)
 	}
 	if decoded.ID != cursor.ID || !decoded.CreatedAt.Equal(cursor.CreatedAt) {
 		t.Fatalf("cursor 往返 = %+v, want %+v", decoded, cursor)
 	}
 
-	if _, err := decodeCollectionCursor("!!!"); err == nil || apperr.Code(err) != apperr.CodeInvalidArgument {
+	if _, err := decodeListCursor("!!!"); err == nil || apperr.Code(err) != apperr.CodeInvalidArgument {
 		t.Fatalf("非法 cursor 应返回 invalid_argument, got %v", err)
 	}
-	if _, err := encodeCollectionCursor(nil); err != nil {
+	if _, err := encodeListCursor(nil); err != nil {
 		t.Fatalf("nil cursor 不应报错: %v", err)
 	}
 }

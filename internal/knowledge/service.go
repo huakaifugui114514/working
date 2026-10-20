@@ -181,11 +181,17 @@ func validateCollectionID(id uuid.UUID) error {
 	return nil
 }
 
-// validateListLimit 校验分页条数在 1..MaxCollectionListLimit。
+// validateListLimit 校验 collections 的分页条数在 1..MaxCollectionListLimit。
 func validateListLimit(limit int) error {
-	if limit < 1 || limit > MaxCollectionListLimit {
+	return validateListLimitMax(limit, MaxCollectionListLimit)
+}
+
+// validateListLimitMax 是 collections / documents 共用的分页上界校验。
+// 抽出来是为了让两个聚合各自使用自己的上限，而不是隐式共用同一个常量。
+func validateListLimitMax(limit, maxLimit int) error {
+	if limit < 1 || limit > maxLimit {
 		return apperr.New(apperr.CodeInvalidArgument,
-			fmt.Sprintf("limit 必须在 1~%d 之间", MaxCollectionListLimit))
+			fmt.Sprintf("limit 必须在 1~%d 之间", maxLimit))
 	}
 	return nil
 }

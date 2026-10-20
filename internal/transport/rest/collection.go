@@ -21,11 +21,11 @@ import (
 const (
 	collectionsPath = "/api/v1/collections"
 
-	// maxCollectionRequestBytes 限制请求体大小，避免超大 JSON 占内存。
-	maxCollectionRequestBytes = 1 << 20
+	// maxRequestBytes 限制请求体大小，避免超大 JSON 占内存。
+	maxRequestBytes = 1 << 20
 
-	// collectionCursorBytes = 8 字节 UnixMilli + 16 字节 UUID。
-	collectionCursorBytes = 24
+	// listCursorBytes = 8 字节 UnixMilli + 16 字节 UUID。
+	listCursorBytes = 24
 )
 
 // CollectionService 是 HTTP 层依赖的知识库业务接口。
@@ -66,14 +66,14 @@ type updateCollectionRequest struct {
 // handleCreateCollection 处理 POST /api/v1/collections。
 func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
 	var req createCollectionRequest
-	if err := decodeCollectionJSON(w, r, &req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		s.writeInvalidJSON(w, r, err)
 		return
 	}
 
 	c, err := s.collections.CreateCollection(r.Context(), req.Name, req.Description)
 	if err != nil {
-		s.handleCollectionError(w, r, err)
+		s.handleServiceError(w, r, err)
 		return
 	}
 
@@ -83,14 +83,14 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 
 // handleGetCollection 处理 GET /api/v1/collections/{id}。
 func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.collectionID(w, r)
+	id, ok := s.pathUUID(w, r, "id")
 	if !ok {
 		return
 	}
 
 	c, err := s.collections.GetCollection(r.Context(), id)
 	if err != nil {
-		s.handleCollectionError(w, r, err)
+		s.handleServiceError(w, r, err)
 		return
 	}
 	respond.JSON(w, s.logger, http.StatusOK, collectionToResponse(c))
@@ -98,7 +98,7 @@ func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
 
 // handleListCollections 处理 GET /api/v1/collections?limit=&cursor=。
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
-	limit, err := parseCollectionLimit(r.URL.Query().Get("limit"))
+	limit, err := parseListLimit(r.URL.Query().Get("limit"), knowledge.DefaultCollectionListLimit, knowledge.MaxCollectionListLimit)
 	if err != nil {
 		respond.FromError(w, s.logger, err)
 		return
@@ -106,7 +106,7 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 
 	var cursor *knowledge.Cursor
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		cursor, err = decodeCollectionCursor(raw)
+		cursor, err = decodeListCursor(raw)
 		if err != nil {
 			respond.FromError(w, s.logger, err)
 			return
@@ -115,7 +115,7 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 
 	collections, next, err := s.collections.ListCollections(r.Context(), cursor, limit)
 	if err != nil {
-		s.handleCollectionError(w, r, err)
+		s.handleServiceError(w, r, err)
 		return
 	}
 
@@ -126,7 +126,7 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 		resp.Items = append(resp.Items, collectionToResponse(c))
 	}
 	if next != nil {
-		encoded, err := encodeCollectionCursor(next)
+		encoded, err := encodeListCursor(next)
 		if err != nil {
 			respond.FromError(w, s.logger, apperr.Wrap(err, apperr.CodeInternal, "生成游标失败"))
 			return
@@ -138,13 +138,13 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateCollection 处理 PATCH /api/v1/collections/{id}。
 func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.collectionID(w, r)
+	id, ok := s.pathUUID(w, r, "id")
 	if !ok {
 		return
 	}
 
 	var req updateCollectionRequest
-	if err := decodeCollectionJSON(w, r, &req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		s.writeInvalidJSON(w, r, err)
 		return
 	}
@@ -154,7 +154,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		Description: req.Description,
 	})
 	if err != nil {
-		s.handleCollectionError(w, r, err)
+		s.handleServiceError(w, r, err)
 		return
 	}
 	respond.JSON(w, s.logger, http.StatusOK, collectionToResponse(c))
@@ -162,47 +162,49 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 
 // handleDeleteCollection 处理 DELETE /api/v1/collections/{id}。
 func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.collectionID(w, r)
+	id, ok := s.pathUUID(w, r, "id")
 	if !ok {
 		return
 	}
 
 	if err := s.collections.SoftDeleteCollection(r.Context(), id); err != nil {
-		s.handleCollectionError(w, r, err)
+		s.handleServiceError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) collectionID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	id, err := uuid.Parse(r.PathValue("id"))
+// pathUUID 解析路径参数里的 UUID；非法值直接写 400。
+// collection / document 的路径参数都走这里，避免每个 handler 重复一段解析和错误响应。
+func (s *Server) pathUUID(w http.ResponseWriter, r *http.Request, param string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(r.PathValue(param))
 	if err != nil {
 		respond.Error(w, s.logger, http.StatusBadRequest,
-			apperr.CodeInvalidArgument, "id 不是合法的 UUID")
+			apperr.CodeInvalidArgument, param+" 不是合法的 UUID")
 		return uuid.Nil, false
 	}
 	return id, true
 }
 
-func parseCollectionLimit(raw string) (int, error) {
+func parseListLimit(raw string, defaultLimit, maxLimit int) (int, error) {
 	if raw == "" {
-		return knowledge.DefaultCollectionListLimit, nil
+		return defaultLimit, nil
 	}
 
 	limit, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, apperr.New(apperr.CodeInvalidArgument, "limit 必须是整数")
 	}
-	if limit < 1 || limit > knowledge.MaxCollectionListLimit {
+	if limit < 1 || limit > maxLimit {
 		return 0, apperr.New(apperr.CodeInvalidArgument,
-			fmt.Sprintf("limit 必须在 1~%d 之间", knowledge.MaxCollectionListLimit))
+			fmt.Sprintf("limit 必须在 1~%d 之间", maxLimit))
 	}
 	return limit, nil
 }
 
-// decodeCollectionJSON 只接受一个 JSON 对象，拒绝未知字段和 trailing JSON。
-func decodeCollectionJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxCollectionRequestBytes)
+// decodeJSONBody 只接受一个 JSON 对象，拒绝未知字段和 trailing JSON。
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -221,12 +223,12 @@ func (s *Server) writeInvalidJSON(w http.ResponseWriter, r *http.Request, err er
 		apperr.CodeInvalidArgument, "请求体不是合法的 JSON 对象")
 }
 
-// handleCollectionError 统一处理知识库接口的错误。
+// handleServiceError 统一处理知识库接口的错误。
 //
 // 客户端断开时 r.Context() 已经取消，此时写响应没有意义，也不能记成 500；
 // 直接返回，让 AccessLog 记录实际状态。
 // context.DeadlineExceeded 目前没有服务端请求超时策略，仍按内部错误处理。
-func (s *Server) handleCollectionError(w http.ResponseWriter, r *http.Request, err error) {
+func (s *Server) handleServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, context.Canceled) && r.Context().Err() != nil {
 		s.logger.InfoContext(r.Context(), "请求已取消")
 		return
@@ -244,9 +246,9 @@ func collectionToResponse(c *knowledge.Collection) collectionResponse {
 	}
 }
 
-// encodeCollectionCursor 把 (created_at, id) 编成不透明 token：
+// encodeListCursor 把 (created_at, id) 编成不透明 token：
 // 8 字节大端 UnixMilli + 16 字节 UUID，再做 base64url（无 padding）。
-func encodeCollectionCursor(cursor *knowledge.Cursor) (string, error) {
+func encodeListCursor(cursor *knowledge.Cursor) (string, error) {
 	if cursor == nil {
 		return "", nil
 	}
@@ -256,15 +258,15 @@ func encodeCollectionCursor(cursor *knowledge.Cursor) (string, error) {
 		return "", errors.New("invalid cursor")
 	}
 
-	var raw [collectionCursorBytes]byte
+	var raw [listCursorBytes]byte
 	binary.BigEndian.PutUint64(raw[:8], uint64(ms))
 	copy(raw[8:], cursor.ID[:])
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
-func decodeCollectionCursor(encoded string) (*knowledge.Cursor, error) {
+func decodeListCursor(encoded string) (*knowledge.Cursor, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(raw) != collectionCursorBytes {
+	if err != nil || len(raw) != listCursorBytes {
 		return nil, apperr.New(apperr.CodeInvalidArgument, "cursor 无效")
 	}
 

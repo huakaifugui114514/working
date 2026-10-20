@@ -515,12 +515,12 @@ components:
           type: string
           maxLength: 2048
           nullable: true
-          description: 不传或传 null 都表示没有来源 URI。
+          description: 不传、传 null、空串或纯空白都表示没有来源 URI（服务端统一折叠为 SQL NULL）。
         mime_type:
           type: string
           maxLength: 128
           nullable: true
-          description: 不传或传 null 都表示未知 MIME 类型。
+          description: 不传、传 null、空串或纯空白都表示未知 MIME 类型（服务端统一折叠为 SQL NULL）。
         size_bytes:
           type: integer
           format: int64
@@ -533,8 +533,9 @@ components:
       additionalProperties: false
       description: |
         空对象 `{}` 合法，表示 no-op。
-        - `title`：缺省或 null 表示不改；空串/trim 后为空 → 400。
-        - `source_uri` / `mime_type` / `size_bytes`：缺省表示不改；null 表示清空。
+        - `title`：缺省或 null 都表示不改（title 是 NOT NULL，不能被清空）；空串/trim 后为空 → 400。
+        - `source_uri` / `mime_type`：缺省表示不改；null、空串或纯空白表示清空为 SQL NULL。
+        - `size_bytes`：缺省表示不改；null 表示清空；0 是合法的 0 字节。
       properties:
         title:
           type: string

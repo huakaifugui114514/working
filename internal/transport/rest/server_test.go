@@ -26,6 +26,16 @@ func newTestServer(t *testing.T, mutate func(*config.Config)) *Server {
 
 func newTestServerWithCollections(t *testing.T, mutate func(*config.Config), collections CollectionService) *Server {
 	t.Helper()
+	return newTestServerWithServices(t, mutate, collections, &fakeDocumentService{})
+}
+
+func newTestServerWithServices(
+	t *testing.T,
+	mutate func(*config.Config),
+	collections CollectionService,
+	documents DocumentService,
+) *Server {
+	t.Helper()
 
 	cfg := config.Default()
 	if mutate != nil {
@@ -35,7 +45,14 @@ func newTestServerWithCollections(t *testing.T, mutate func(*config.Config), col
 	if err != nil {
 		t.Fatalf("创建测试 logger 失败: %v", err)
 	}
-	return New(*cfg, logger, version.Info{Version: "v-test", Commit: "c0ffee", BuildTime: "2026-01-01T00:00:00Z"}, collections)
+	if collections == nil {
+		collections = &fakeCollectionService{}
+	}
+	if documents == nil {
+		documents = &fakeDocumentService{}
+	}
+	return New(*cfg, logger, version.Info{Version: "v-test", Commit: "c0ffee", BuildTime: "2026-01-01T00:00:00Z"},
+		collections, documents)
 }
 
 // do 走 httptest 直接调用装配好的 handler：不起真实端口、不经过网络。
@@ -317,12 +334,39 @@ func TestServerLoggerIsQuiet(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	cfg := *config.Default()
-	s := New(cfg, logger, version.Info{Version: "v-test"}, nil)
+	s := New(cfg, logger, version.Info{Version: "v-test"}, &fakeCollectionService{}, &fakeDocumentService{})
 
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if !strings.Contains(buf.String(), "http 请求") {
 		t.Errorf("访问日志应当写进注入的 logger，实际缓冲内容: %q", buf.String())
+	}
+}
+
+// TestNewRejectsNilDependencies 钉住装配期的 fail-fast：
+// 空依赖不能被静默接受，否则要等请求打进来才 panic。
+func TestNewRejectsNilDependencies(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	info := version.Info{Version: "v-test"}
+
+	tests := []struct {
+		name        string
+		collections CollectionService
+		documents   DocumentService
+	}{
+		{name: "collections nil", collections: nil, documents: &fakeDocumentService{}},
+		{name: "documents nil", collections: &fakeCollectionService{}, documents: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("New 应当 panic")
+				}
+			}()
+			New(*config.Default(), logger, info, tt.collections, tt.documents)
+		})
 	}
 }
