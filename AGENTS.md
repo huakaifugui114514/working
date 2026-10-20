@@ -267,11 +267,13 @@
   集成测试覆盖 CRUD / 重复关联 / 软删过滤 / 同毫秒分页；真实 MySQL `EXPLAIN` 走
   `idx_collection_created`（Using index + Backward index scan，无 filesort）。
   add 关联只读 collection，用 `FOR SHARE` 共享锁；document 仍 `FOR UPDATE`（软删互斥）
-- ✅ 软删物理清理（本轮）：`migrations/0002_purge_indexes`（`(deleted_at, id)`）+
-  `internal/purge`（按关联行分批、NOT EXISTS 防孤儿、dry-run、批间 sleep、幂等）+
-  `cmd/purge`（retention / batch / interval / dry-run / timeout）。真实 MySQL 验收：
-  dry-run 与实删统计一致，过期/孤儿行清零，保留期内数据与活跃关联保留
-- ⬜ 下一步：检索 / Agent
+- ✅ 软删恢复（本轮）：documents / collections 的 `/restore`，事务 + `SELECT ... FOR UPDATE`；
+  deleted_at NULL → 409，物理删除/不存在 → 404；关联保持原样
+- ✅ 软删物理清理（本轮重构）：`migrations/0002_purge_indexes`（`(deleted_at, id)`）+
+  `internal/purge`（按父行短事务、先锁父行再删关联、dry-run、批间 sleep、幂等）+
+  `cmd/purge`（retention / batch / interval / dry-run / timeout）。restore 与 purge 通过
+  同一父行锁串行化；真实 MySQL 验收：过期/孤儿行清零，保留期内数据与活跃关联保留
+- ⬜ 下一步：M4.1 正文入库 → M4.2 检索 → M4.3 Agent
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -307,8 +309,8 @@ go run ./cmd/purge -dry-run         # 软删清理预演；确认后去掉 -dry-
 3. ✅ M1 全部完成（config / observability / middleware / rest / cmd/apid，服务可运行）。
    ✅ M2 collections CRUD 完成：database → migrate/0001 → repository → service → handler → cmd/apid。
    ✅ M3 documents 完成：repository + service + handler + 集成测试 + 真实 curl/EXPLAIN 验收。
-   ✅ 软删清理完成：0002 索引 + `internal/purge` + `cmd/purge`，真实 MySQL 分批验收。
-   ⬜ **下一步**：检索 / Agent。
+   ✅ 软删恢复/清理完成：restore 行锁 + 0002 索引 + `internal/purge` + `cmd/purge`，真实 MySQL 验收。
+   ⬜ **下一步**：M4.1 正文入库 → M4.2 检索 → M4.3 Agent。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备

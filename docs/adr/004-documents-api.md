@@ -113,39 +113,49 @@ DELETE /api/v1/collections/{cid}/documents/{did}
 
 Go map 扩容是“不做不行”；软删清理是“可以延后做”。把 DELETE 塞进用户请求会让延迟尾部、锁竞争、主从延迟不可控，而且清理量依赖流量——低峰期可能没请求，高峰期反而最忙。
 
-**推荐的 purge 设计**：
+**已实现的 purge 设计**：
 
 1. 独立命令/定时任务，低峰期运行；
-2. 每批 500–2000 行，批间 sleep；记录进度和指标；
-3. 先清关联，再清文档/集合：
+2. 每批取 500–2000 个父行，批间 sleep；记录进度和指标；
+3. **每个父行一个短事务，先锁父行，再删子行**：
 
 ```sql
--- 1) 按"关联行"分批取过期 document 的关联，避免一个 document 属于很多 collection
-SELECT cd.collection_id, cd.document_id
-FROM collection_documents cd
-JOIN documents d ON d.id = cd.document_id
-WHERE d.deleted_at IS NOT NULL AND d.deleted_at < ?
-ORDER BY cd.document_id, cd.collection_id
-LIMIT ?;
+BEGIN;
 
-DELETE FROM collection_documents
-WHERE (collection_id, document_id) IN ((?, ?), (?, ?), ...);
+SELECT deleted_at
+FROM documents
+WHERE id = ?
+FOR UPDATE;
 
--- 2) 过期 collection 的关联同理（按 cd.collection_id 取批）
+-- deleted_at 为 NULL（restore 赢了）或 >= cutoff：ROLLBACK，跳过
+-- 行不存在（已被其他 worker 删除）：ROLLBACK，跳过
 
--- 3) 再过期的 document / collection：此时已无关联，按 (deleted_at, id) 取批
-SELECT id FROM documents
-WHERE deleted_at IS NOT NULL AND deleted_at < ?
-  AND NOT EXISTS (SELECT 1 FROM collection_documents cd WHERE cd.document_id = documents.id)
-ORDER BY deleted_at, id
-LIMIT ?;
+DELETE FROM collection_documents WHERE document_id = ?;
+-- M4.1 之后：DELETE FROM document_chunks WHERE document_id = ?;
+--            DELETE FROM document_contents WHERE document_id = ?;
+DELETE FROM documents WHERE id = ?;
+
+COMMIT;
 ```
 
+collection 同理：先 `collections ... FOR UPDATE`，再删该 collection 的关联，最后删 collection。
+
 4. 需要新迁移加 `(deleted_at, id)` 索引；0001 已应用，不能改。**0002 已追加该索引**。
-5. 高并发下“purge 删文档 vs 新加关联”要加行锁或对账：
-   - 添加关联时在事务里对 collection 加 `FOR SHARE`（只读、允许多个 add 并发），对 document 加 `FOR UPDATE` 确认存在（document 会被软删，需要排他锁与软删互斥）；
-   - purge 的 DELETE 会拿排他行锁；两者冲突时由 InnoDB 串行化；
-   - 删除 document 的 SQL 再次带 `NOT EXISTS`，防止 SELECT 与 DELETE 之间新增关联造成孤儿行。
+5. 高并发下的锁协议：
+   - 添加关联时对 collection 加 `FOR SHARE`（只读、允许多个 add 并发），对 document 加 `FOR UPDATE` 确认存在；
+   - **restore 与 purge 都对同一父行 `SELECT ... FOR UPDATE`**：谁先拿到锁谁赢，后拿到锁的一方重新读 `deleted_at` 再决定恢复或删除；
+   - 不在事务里锁父行就开始删关联，会出现“restore 成功但关联被删”的窗口；
+   - 大知识库的关联可能很多，单父行事务会变大；如果真遇到超大 collection，再加 `purge_state`/lease，而不是拆开事务破坏锁协议。
+
+### 6. Restore 语义
+
+- `POST /api/v1/documents/{id}/restore`、`POST /api/v1/collections/{id}/restore`。
+- 只要行还没被 purge 物理删除，就允许恢复（purge 是硬截止）。
+- 事务内 `SELECT ... FOR UPDATE`，根据 `deleted_at` 区分：
+  - 行不存在 / 已物理删除 → 404
+  - `deleted_at IS NULL`（本来就没删）→ 409
+  - `deleted_at` 非空 → 置 NULL、刷新 `updated_at`，返回 200
+- 软删时保留的关联和正文在 restore 后原样可见；purge 已经物理删掉的资源无法恢复。
 
 ## 后果
 
@@ -155,8 +165,9 @@ LIMIT ?;
 - `DELETE` 关联不存在 → 404；删除文档是软删，返回 204。
 - 移除关联只检查关联行是否存在；父资源（collection/document）已软删不阻塞，仍返回 204。
   父行物理删除前 purge 会先清关联，因此正常路径不会出现“关联还在、父行已物理消失”。
-- 物理 purge 已实现：`internal/purge`（分批 + 批间 sleep + dry-run）+ `cmd/purge`；
+- 物理 purge 已实现：`internal/purge`（按父行短事务 + 批间 sleep + dry-run）+ `cmd/purge`；
   由 cron / CronJob 调用，不挂请求路径。
+- restore 已实现：restore 与 purge 通过同一父行锁串行化；active → 409，物理删除 → 404。
 - 0002 已追加 `(deleted_at, id)` 索引；purge 取批用 `ORDER BY deleted_at, id`，
   与索引顺序一致，避免 filesort。
 - `source_uri` / `mime_type` 的空串和纯空白在 service 层折叠为 SQL NULL；
@@ -164,10 +175,12 @@ LIMIT ?;
 
 ## 验证
 
-- 契约：`api/openapi.yaml` 已包含 `Document` / `DocumentCreate` / `DocumentUpdate` / `CollectionDocument` 与 5 个新端点。
+- 契约：`api/openapi.yaml` 已包含 `Document` / `DocumentCreate` / `DocumentUpdate` / `CollectionDocument`、documents/关联端点与 restore 端点。
 - 已实现：
   - `httptest` 覆盖 201/204/400/404/409；
   - repository 集成测试覆盖重复添加 1062 → 409、移除不存在 → 404、软删文档不出现在 collection 列表；
+  - restore 集成测试覆盖 200/404/409、关联保留；purge 按父行事务的集成测试覆盖过期/孤儿行清理；
+  - 并发集成测试覆盖两种顺序：restore 先锁 → purge 跳过、关联保留；purge 先删 → restore 404；
   - 真实 `curl` 走通 create document / add association / list / remove association / soft delete；
   - `internal/purge` 集成测试覆盖 dry-run、分批、关联清理、保留期内数据保留、幂等；
   - 真实 MySQL `EXPLAIN` 验证 purge 取批走 `idx_deleted_id`（range + Using index，无 filesort）。

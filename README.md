@@ -2,8 +2,8 @@
 
 AI Native 企业知识库与 Agent 平台（Go 服务端）。
 
-> **当前状态：M3 documents CRUD + 软删清理已实现，collections + documents 可运行。**
-> 配置、日志、HTTP 中间件、`/healthz`、优雅退出，知识库与文档的创建/查询/分页/更新/软删、文档关联，以及 `cmd/purge` 分批物理清理**已实现并有真实验收**（见「快速开始」「知识库 CRUD」「文档与关联 CRUD」「软删物理清理」）。
+> **当前状态：M3 documents CRUD + 软删恢复/清理已实现，collections + documents 可运行。**
+> 配置、日志、HTTP 中间件、`/healthz`、优雅退出，知识库与文档的创建/查询/分页/更新/软删/恢复、文档关联，以及 `cmd/purge` 分批物理清理**已实现并有真实验收**（见「快速开始」「知识库 CRUD」「文档与关联 CRUD」「软删恢复与物理清理」）。
 > 检索、Agent 尚未实现——请不要按本文部署到生产。
 
 ## 技术栈
@@ -139,9 +139,11 @@ KF_DATABASE_PASSWORD="$MYSQL_PASSWORD" \
 go run ./cmd/migrate up
 ```
 
-### 软删物理清理（purge）
+### 软删恢复与物理清理（restore / purge）
 
-`DELETE /api/v1/...` 只做软删；`cmd/purge` 负责在保留期（默认 30 天）后物理删除。
+`DELETE /api/v1/...` 只做软删；`POST /api/v1/.../{id}/restore` 恢复软删资源；
+`cmd/purge` 负责在保留期（默认 30 天）后物理删除。restore 和 purge 对同一父行
+`SELECT ... FOR UPDATE`，谁先拿到锁谁赢：restore 先锁则 purge 跳过，purge 先锁则 restore 404。
 它**不在请求路径上运行**，建议由 cron / Kubernetes CronJob 在低峰期调用：
 
 ```bash
@@ -149,6 +151,10 @@ set -a; . deploy/.env; set +a
 export KF_DATABASE_HOST=127.0.0.1 KF_DATABASE_PORT="${MYSQL_PORT:-3306}" \
        KF_DATABASE_NAME="$MYSQL_DATABASE" KF_DATABASE_USER="$MYSQL_USER" \
        KF_DATABASE_PASSWORD="$MYSQL_PASSWORD"
+
+# 恢复已软删资源（200；本来没删 409；已被物理删除 404）
+curl -sS -X POST http://127.0.0.1:18080/api/v1/documents/<did>/restore
+curl -sS -X POST http://127.0.0.1:18080/api/v1/collections/<cid>/restore
 
 # 先看会删多少行，不执行 DELETE
 go run ./cmd/purge -dry-run
@@ -160,26 +166,35 @@ go run ./cmd/purge -batch 1000 -interval 1s
 | flag | 默认值 | 说明 |
 |---|---|---|
 | `-retention` | `720h` | 软删后保留多久才物理删除（30 天） |
-| `-batch` | `1000` | 每批处理的关联/父行数；建议 500–2000 |
+| `-batch` | `1000` | 每批处理的父行数；建议 500–2000 |
 | `-interval` | `1s` | 批间 sleep；`0` 仅建议测试 |
 | `-dry-run` | `false` | 只统计，不删除 |
 | `-timeout` | `30m` | 单次运行上限，防止异常数据让任务无限跑 |
 
-清理顺序：过期 document 的关联 → 过期 collection 的关联 → 已无关联的过期 document →
-已无关联的过期 collection。重复执行是幂等的；0002 迁移为它补了
+清理顺序：逐个父行开事务 → 锁父行并重检 `deleted_at` → 删关联 → 删父行 → 提交。
+重复执行是幂等的；0002 迁移为它补了
 `(deleted_at, id)` 索引，取批按 `ORDER BY deleted_at, id`；正常数据量下走索引、避免 filesort。
 
 真实 MySQL 8.4 验收（插入 2 个过期父资源 + 2 个孤儿行，batch=1）：
 
 ```text
 go run ./cmd/purge -dry-run -batch 1 -interval 0
-{"time":"2026-10-20T13:45:45.060557994+08:00","level":"INFO","msg":"purge dry-run 完成","associations":2,"documents":2,"collections":2}
+{"time":"2026-10-21T05:48:27.441106578+08:00","level":"INFO","msg":"purge dry-run 完成","associations":2,"documents":2,"collections":2}
 
 go run ./cmd/purge -batch 1 -interval 0
-{"time":"2026-10-20T13:45:45.124931459+08:00","level":"INFO","msg":"purge 完成","associations":2,"documents":2,"collections":2,"batches":3}
-{"time":"2026-10-20T13:45:45.124940146+08:00","level":"INFO","msg":"purge 统计","associations":2,"documents":2,"collections":2,"batches":3,"dry_run":false,"finished_at":"2026-10-20T05:45:45.124938382Z"}
+{"time":"2026-10-21T05:48:27.516299181+08:00","level":"INFO","msg":"purge 完成","associations":2,"documents":2,"collections":2,"batches":2}
+{"time":"2026-10-21T05:48:27.516325381+08:00","level":"INFO","msg":"purge 统计","associations":2,"documents":2,"collections":2,"batches":2,"dry_run":false,"finished_at":"2026-10-20T21:48:27.516323787Z"}
 
 验证：过期/孤儿行 count 全为 0；活跃 collection/document 仍为 1；关联已清空。
+```
+
+restore 真实验收（软删文档 → restore → 再 restore）：
+
+```text
+DELETE /api/v1/documents/{id}          → 204
+POST   /api/v1/documents/{id}/restore  → 200（返回恢复后的 Document）
+POST   同上（重复）                     → 409 {"error":{"code":"conflict","message":"文档未被软删"}}
+GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 ```
 
 ## 配置
@@ -215,6 +230,8 @@ go run ./cmd/purge -batch 1 -interval 0
 | GET | `/api/v1/documents/{id}` | 按 id 查询文档 | ✅ |
 | PATCH | `/api/v1/documents/{id}` | PATCH 更新（可空字段支持“缺省 / null / 值”三态） | ✅ |
 | DELETE | `/api/v1/documents/{id}` | 软删文档（关联行保留） | ✅ |
+| POST | `/api/v1/documents/{id}/restore` | 恢复软删文档；本来没删 → 409 | ✅ |
+| POST | `/api/v1/collections/{id}/restore` | 恢复软删知识库；本来没删 → 409 | ✅ |
 | POST | `/api/v1/collections/{id}/documents` | 添加文档关联；重复添加 → 409 | ✅ |
 | GET | `/api/v1/collections/{id}/documents` | 按 `added_at` 分页列出文档 | ✅ |
 | DELETE | `/api/v1/collections/{id}/documents/{document_id}` | 只移除关联，不删文档 | ✅ |
@@ -394,7 +411,8 @@ go test -race -tags=integration -count=1 ./internal/knowledge ./internal/purge
 - [x] 本地 MySQL 8 编排（`deploy/docker-compose.yml` + 真实健康检查）
 - [x] 单元测试 + repository 集成测试 + 竞态检测门禁
 - [x] 文档管理（documents / collection_documents 的 repository + service + handler）
-- [x] 软删物理清理（`cmd/purge`，默认保留 30 天，见 ADR 004）
+- [x] 软删恢复（documents / collections 的 `/restore`，restore 与 purge 行锁串行化）
+- [x] 软删物理清理（`cmd/purge`，默认保留 30 天，按父行事务，见 ADR 004）
 - [ ] 检索 / Agent 接口
 
 ## 协作与规范
