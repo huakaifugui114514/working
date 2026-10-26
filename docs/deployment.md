@@ -47,7 +47,7 @@ docker build \
 
 - 多阶段构建，运行阶段不含 Go 工具链；
 - 非 root 用户 `knowflow`；
-- 内置 `apid / migrate / purge / embed / vector-clean`；
+- 内置 `apid / migrate / purge / embed / vector-clean / mcp-server`；
 - 默认入口 `apid`，其他命令通过 compose `command` 覆盖；
 - 配置文件位于 `/etc/knowflow/config.yaml`，环境变量覆盖。
 

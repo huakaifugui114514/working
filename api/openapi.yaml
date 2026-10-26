@@ -500,6 +500,39 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/agent/chat/stream:
+    post:
+      tags: [agent]
+      operationId: agentChatStream
+      summary: 单轮 RAG 流式问答（SSE）
+      description: |
+        与 `/api/v1/agent/chat` 相同的校验、检索和 citations 语义，但用
+        `text/event-stream` 逐段返回。
+        事件：
+        - `token`：`{"delta":"..."}`
+        - `done`：`{"citations":[...]}`
+        - `error`：`{"message":"生成回答失败"}`
+        没有检索结果时只发送固定 answer 的 token 与空 citations done，不调用 LLM。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentChatRequest'
+      responses:
+        '200':
+          description: SSE 流；事件见 description
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/agent/chat:
     post:
       tags: [agent]

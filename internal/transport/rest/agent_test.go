@@ -12,7 +12,8 @@ import (
 )
 
 type fakeAgentService struct {
-	chat func(context.Context, string, *uuid.UUID) (*agent.ChatResult, error)
+	chat   func(context.Context, string, *uuid.UUID) (*agent.ChatResult, error)
+	stream func(context.Context, string, *uuid.UUID) (<-chan agent.StreamEvent, error)
 }
 
 var _ AgentService = (*fakeAgentService)(nil)
@@ -26,6 +27,17 @@ func (f *fakeAgentService) Chat(
 		panic("unexpected Chat call")
 	}
 	return f.chat(ctx, message, collectionID)
+}
+
+func (f *fakeAgentService) ChatStream(
+	ctx context.Context,
+	message string,
+	collectionID *uuid.UUID,
+) (<-chan agent.StreamEvent, error) {
+	if f.stream == nil {
+		panic("unexpected ChatStream call")
+	}
+	return f.stream(ctx, message, collectionID)
 }
 
 func TestAgentChat(t *testing.T) {
@@ -163,4 +175,45 @@ func TestAgentChatServiceErrors(t *testing.T) {
 			assertHTTPError(t, rec, tt.wantStatus, tt.wantCode)
 		})
 	}
+}
+
+func TestAgentChatStream(t *testing.T) {
+	chunk := uuid.New()
+	doc := uuid.New()
+	svc := &fakeAgentService{
+		stream: func(context.Context, string, *uuid.UUID) (<-chan agent.StreamEvent, error) {
+			ch := make(chan agent.StreamEvent, 3)
+			ch <- agent.StreamEvent{Delta: "你"}
+			ch <- agent.StreamEvent{Delta: "好"}
+			ch <- agent.StreamEvent{Done: true, Citations: []agent.RetrievedChunk{{
+				ChunkID: chunk, DocumentID: doc, DocumentTitle: "文档", Content: "正文", Score: 0.9,
+			}}}
+			close(ch)
+			return ch, nil
+		},
+	}
+	s := newTestServerWithAgent(t, nil, svc)
+
+	rec := doJSON(t, s, http.MethodPost, agentChatStreamPath, `{"message":"问题"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"event: token", `"delta":"你"`, `"delta":"好"`,
+		"event: done", `"chunk_id":"` + chunk.String() + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("SSE 缺少 %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestAgentChatStreamInvalidRequest(t *testing.T) {
+	s := newTestServerWithAgent(t, nil, &fakeAgentService{})
+	rec := doJSON(t, s, http.MethodPost, agentChatStreamPath, `{"message":`)
+	assertHTTPError(t, rec, http.StatusBadRequest, apperr.CodeInvalidArgument)
 }

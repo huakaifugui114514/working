@@ -33,6 +33,27 @@ type ChatResponse struct {
 	Usage   TokenUsage
 }
 
+// StreamDelta 是流式生成的一段内容。
+// Done=true 表示模型流结束；Content 可以为空。
+type StreamDelta struct {
+	Content string
+	Done    bool
+}
+
+// ChatStream 是一次流式生成。
+type ChatStream interface {
+	// Recv 返回下一段内容；流正常结束时返回 Done=true。
+	Recv() (StreamDelta, error)
+	Close() error
+}
+
+// StreamingLLMClient 是可选能力：实现它的 LLM 支持流式输出。
+//
+// AgentService 在可用时走 SSE；未实现时降级为一次性回答。
+type StreamingLLMClient interface {
+	ChatStream(ctx context.Context, req ChatRequest) (ChatStream, error)
+}
+
 // LLMClient 是 Agent 依赖的生成接口。
 //
 // M4.3a 用 fake；M4.3b 再用 DeepSeek 的 OpenAI-compatible 客户端。

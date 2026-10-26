@@ -170,6 +170,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET "+searchPath, s.handleSearch)
 	mux.HandleFunc("POST "+agentChatPath, s.handleAgentChat)
+	mux.HandleFunc("POST "+agentChatStreamPath, s.handleAgentChatStream)
 
 	// 调试路由只在 dev 注册：生产环境多一个入口就多一个攻击面
 	if s.cfg.App.Env == config.EnvDev {

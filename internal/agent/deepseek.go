@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -150,3 +151,88 @@ func (c *DeepSeekClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		},
 	}, nil
 }
+
+type deepSeekStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+// ChatStream 调用 stream=true 的 /chat/completions。
+func (c *DeepSeekClient) ChatStream(ctx context.Context, req ChatRequest) (ChatStream, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("%w: 缺少 KF_LLM_API_KEY", ErrLLMNotConfigured)
+	}
+	if len(req.Messages) == 0 {
+		return nil, fmt.Errorf("deepseek: messages 不能为空")
+	}
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = c.maxTokens
+	}
+	body, err := json.Marshal(deepSeekChatRequest{
+		Model:       c.model,
+		Messages:    req.Messages,
+		Temperature: req.Temperature,
+		MaxTokens:   maxTokens,
+		Stream:      true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("deepseek: 编码流式请求失败: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("deepseek: 创建流式请求失败: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("deepseek: 流式请求失败: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("deepseek: stream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return &deepSeekStream{body: resp.Body, scanner: bufio.NewScanner(resp.Body)}, nil
+}
+
+type deepSeekStream struct {
+	body    io.ReadCloser
+	scanner *bufio.Scanner
+	done    bool
+}
+
+func (s *deepSeekStream) Recv() (StreamDelta, error) {
+	for s.scanner.Scan() {
+		line := strings.TrimSpace(s.scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			s.done = true
+			return StreamDelta{Done: true}, nil
+		}
+		var chunk deepSeekStreamResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return StreamDelta{}, fmt.Errorf("deepseek: 解析流式 chunk 失败: %w", err)
+		}
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+			return StreamDelta{Content: chunk.Choices[0].Delta.Content}, nil
+		}
+	}
+	if err := s.scanner.Err(); err != nil {
+		return StreamDelta{}, fmt.Errorf("deepseek: 读取流失败: %w", err)
+	}
+	if !s.done {
+		return StreamDelta{}, fmt.Errorf("deepseek: 流在 [DONE] 之前结束")
+	}
+	return StreamDelta{Done: true}, nil
+}
+
+func (s *deepSeekStream) Close() error { return s.body.Close() }

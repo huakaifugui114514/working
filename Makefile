@@ -114,6 +114,11 @@ embed-eval: ## 纯向量评测（需要 Ollama + bge-m3）
 embed-once: ## 处理当前到期 embedding 任务后退出（需要 Ollama + Qdrant）
 	@go run ./cmd/embed -once
 
+.PHONY: mcp-build
+mcp-build: ## 构建 MCP stdio Server 到 bin/mcp-server
+	@mkdir -p $(BIN_DIR)
+	@go build -trimpath -o $(BIN_DIR)/mcp-server ./cmd/mcp-server
+
 .PHONY: vector-clean-once
 vector-clean-once: ## 处理当前到期 Qdrant 向量清理任务后退出（需要 Qdrant）
 	@go run ./cmd/vector-clean -once

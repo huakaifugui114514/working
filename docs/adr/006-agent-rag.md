@@ -211,7 +211,8 @@ rest → agent → knowledge（通过接口/领域类型）
 - citations 是“检索来源”，不是“每句话的证明”；需要更强可追溯性时再升级。
 - DeepSeek 是外部依赖，网络/额度/延迟会影响 Agent；CRUD/search 不受影响。
 - 向量 RAG 替换时，只需新增 Retriever 实现，不改 Agent/HTTP 契约。
-- 不做多轮、不做流式、不做工具调用，是刻意的 MVP 边界。
+- M4.3 的 MVP 不做多轮、不做工具调用；流式回答在后续以 `/agent/chat/stream` 补充（SSE）。
+- 多轮/工具调用仍不在单轮 RAG 契约内；MCP Server 作为外部协议层单独提供 Tools。
 - Agent 路由单独延长 HTTP 写截止时间（`llm.timeout + 30s`），避免全局 `write_timeout=10s`
   截断慢模型响应；其他接口不受影响。已用 12s 慢 provider 验证。
 

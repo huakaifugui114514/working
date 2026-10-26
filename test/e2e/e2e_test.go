@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,6 +233,30 @@ func TestFullRAGHTTPFlow(t *testing.T) {
 	}
 	if chat["answer"] != "答案 [1]" {
 		t.Fatalf("answer = %v", chat["answer"])
+	}
+
+	// SSE：当前 fakeLLM 不支持流式，Service 会降级为一次性回答，再通过 SSE 发出。
+	streamReq, _ := http.NewRequest(http.MethodPost,
+		httpServer.URL+"/api/v1/agent/chat/stream",
+		bytes.NewReader(mustJSON(t, map[string]any{
+			"collection_id": collectionID,
+			"message":       "服务挂了先找谁",
+		})))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamReq.Header.Set("Authorization", "Bearer "+authKey)
+	streamResp, err := client.Do(streamReq)
+	if err != nil {
+		t.Fatalf("SSE: %v", err)
+	}
+	streamBody, _ := io.ReadAll(streamResp.Body)
+	_ = streamResp.Body.Close()
+	if streamResp.StatusCode != http.StatusOK {
+		t.Fatalf("SSE status=%d body=%s", streamResp.StatusCode, streamBody)
+	}
+	for _, want := range []string{"event: token", "event: done", `"chunk_id"`} {
+		if !strings.Contains(string(streamBody), want) {
+			t.Fatalf("SSE 缺少 %q:\n%s", want, streamBody)
+		}
 	}
 
 	// 清理真实数据；Qdrant collection 由 t.Cleanup 删除。

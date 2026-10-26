@@ -256,6 +256,7 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 | PUT | `/api/v1/documents/{id}/content` | 整体替换正文（content + SHA-256 + chunks 原子替换） | ✅ |
 | GET | `/api/v1/search` | ngram FULLTEXT 检索 chunk；`q` 2..256 rune，`offset+limit<=1000` | ✅ |
 | POST | `/api/v1/agent/chat` | 单轮 RAG 问答；答案 + citations | ✅ |
+| POST | `/api/v1/agent/chat/stream` | 单轮 RAG SSE 流式回答；`token` / `done` / `error` | ✅ |
 | POST | `/api/v1/collections/{id}/documents` | 添加文档关联；重复添加 → 409 | ✅ |
 | GET | `/api/v1/collections/{id}/documents` | 按 `added_at` 分页列出文档 | ✅ |
 | DELETE | `/api/v1/collections/{id}/documents/{document_id}` | 只移除关联，不删文档 | ✅ |
@@ -412,6 +413,7 @@ POST /api/v1/agent/chat
 - 先检索 topK=5 个 chunk；0 条结果直接返回固定 answer，不调用 LLM。
 - `citations` 的 `index` 从 1 开始，对应 prompt 里的 `[1]`；MVP 不校验模型是否真的写了正确的 `[n]`。
 - 使用 DeepSeek 的 OpenAI-compatible `/chat/completions`，用标准库 `net/http`，不引 SDK。
+- `POST /api/v1/agent/chat/stream` 返回 SSE：`token` 增量、`done` citations、`error` 错误事件。
 - 没配 `KF_LLM_API_KEY` 时服务仍可启动，但 `/agent/chat` 返回 500；CRUD/search 不受影响。
 - 无 key 的自动化 E2E 使用 fake OpenAI-compatible provider；本地真实 DeepSeek 已验收（约 0.7s）。
 - Agent 路由单独把写截止时间延长到 `llm.timeout + 30s`，其他接口仍用 `server.write_timeout`；
@@ -614,6 +616,12 @@ purge 完成 associations=1 contents=1 chunks=1 jobs=1 documents=1
 
 - [`docs/deployment.md`](docs/deployment.md)
 - [`docs/operations.md`](docs/operations.md)
+- [`docs/mcp.md`](docs/mcp.md)：MCP Server 接入 Cursor / Claude Desktop
+- [`docs/architecture.md`](docs/architecture.md)：架构与 20 个追问
+- [`docs/day30-review.md`](docs/day30-review.md)：Day 30 收官复盘
+- [`docs/load-test.md`](docs/load-test.md)：压测报告
+- [`docs/postmortem.md`](docs/postmortem.md)：故障复盘
+- [`docs/rag-eval.md`](docs/rag-eval.md)：RAG 评测
 
 最短路径：
 
@@ -665,7 +673,7 @@ make coverage
 ## 目录结构
 
 ```
-cmd/         可执行程序入口（apid / migrate / purge / embed / embed-eval / vector-clean，只做装配）
+cmd/         可执行程序入口（apid / migrate / purge / embed / embed-eval / vector-clean / mcp-server，只做装配）
 internal/    私有代码，外部模块不可导入
   config/        配置加载与校验
   apperr/        业务错误与错误码

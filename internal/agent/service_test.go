@@ -30,7 +30,8 @@ func (f *fakeRetriever) Retrieve(
 }
 
 type fakeLLM struct {
-	chat func(context.Context, ChatRequest) (*ChatResponse, error)
+	chat   func(context.Context, ChatRequest) (*ChatResponse, error)
+	stream func(context.Context, ChatRequest) (ChatStream, error)
 }
 
 var _ LLMClient = (*fakeLLM)(nil)
@@ -40,6 +41,13 @@ func (f *fakeLLM) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, err
 		panic("unexpected Chat call")
 	}
 	return f.chat(ctx, req)
+}
+
+func (f *fakeLLM) ChatStream(ctx context.Context, req ChatRequest) (ChatStream, error) {
+	if f.stream == nil {
+		panic("unexpected ChatStream call")
+	}
+	return f.stream(ctx, req)
 }
 
 type fakeCollectionLookup struct {

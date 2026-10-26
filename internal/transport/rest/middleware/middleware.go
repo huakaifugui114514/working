@@ -56,6 +56,14 @@ func (r *recorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush 让 SSE 能穿过 AccessLog/Metrics 的 recorder。
+// 底层不支持 Flusher 时静默忽略；HTTP/1.1 的 ResponseWriter 基本都支持。
+func (r *recorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // Unwrap 让 http.ResponseController 能拿到底层 ResponseWriter（Flush / Hijack / SetWriteDeadline）。
 func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 

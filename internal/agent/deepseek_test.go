@@ -228,3 +228,91 @@ func TestDeepSeekChatInvalidJSON(t *testing.T) {
 		t.Fatal("非法 JSON 应返回错误")
 	}
 }
+
+func TestDeepSeekChatStreamSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("解码请求: %v", err)
+		}
+		if payload["stream"] != true {
+			t.Errorf("stream = %v, want true", payload["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, err := NewDeepSeekClient(DeepSeekOptions{
+		BaseURL: server.URL, APIKey: "key", Model: "deepseek-chat",
+		Timeout: time.Second, MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewDeepSeekClient: %v", err)
+	}
+	stream, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "你好"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	var got string
+	for {
+		delta, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if delta.Done {
+			break
+		}
+		got += delta.Content
+	}
+	if got != "你好" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestDeepSeekChatStreamNon2xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprint(w, `{"error":"bad"}`)
+	}))
+	defer server.Close()
+	client, _ := NewDeepSeekClient(DeepSeekOptions{
+		BaseURL: server.URL, APIKey: "key", Model: "deepseek-chat",
+		Timeout: time.Second, MaxTokens: 1024,
+	})
+	if _, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "你好"}},
+	}); err == nil {
+		t.Fatal("非 2xx 应返回错误")
+	}
+}
+
+func TestDeepSeekChatStreamWithoutDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"片段\"}}]}\n\n")
+	}))
+	defer server.Close()
+	client, _ := NewDeepSeekClient(DeepSeekOptions{
+		BaseURL: server.URL, APIKey: "key", Model: "deepseek-chat",
+		Timeout: time.Second, MaxTokens: 1024,
+	})
+	stream, err := client.ChatStream(context.Background(), ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "你好"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+	if _, err := stream.Recv(); err == nil {
+		t.Fatal("缺少 [DONE] 应返回错误")
+	}
+}

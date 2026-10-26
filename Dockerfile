@@ -27,14 +27,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/purge ./cmd/purge && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/embed ./cmd/embed && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/vector-clean ./cmd/vector-clean
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/vector-clean ./cmd/vector-clean && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/mcp-server ./cmd/mcp-server
 
 FROM ${RUNTIME_IMAGE}
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S knowflow && adduser -S -G knowflow knowflow
 
-COPY --from=build /out/apid /out/migrate /out/purge /out/embed /out/vector-clean /usr/local/bin/
+COPY --from=build /out/apid /out/migrate /out/purge /out/embed /out/vector-clean /out/mcp-server /usr/local/bin/
 COPY --from=build /src/configs/config.yaml /etc/knowflow/config.yaml
 
 USER knowflow
