@@ -101,6 +101,9 @@ jobs:
           echo "Qdrant 未就绪" >&2
           exit 1
 
+      - name: 应用迁移
+        run: go run ./cmd/migrate up
+
       - name: 集成测试（race，无 Ollama 时自动跳过真实 embedding）
         run: go test -race -tags=integration -count=1 ./...
 

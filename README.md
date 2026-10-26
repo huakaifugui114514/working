@@ -229,6 +229,12 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 | `KF_REDIS_DB` | Redis DB，默认 `0` |
 | `KF_REDIS_TIMEOUT` | Redis 连接/读写超时，默认 `2s` |
 | `KF_REDIS_SEARCH_TTL` | 搜索结果缓存 TTL，默认 `30s` |
+| `KF_KAFKA_BROKERS` | Kafka brokers，逗号分隔；空 = 关闭事件通道 |
+| `KF_KAFKA_TOPIC` | 事件 topic，默认 `knowflow.document.events` |
+| `KF_KAFKA_GROUP_ID` | 消费组，默认 `knowflow-embed` |
+| `KF_KAFKA_TIMEOUT` | Kafka 请求超时，默认 `10s` |
+| `KF_KAFKA_BATCH_SIZE` | dispatcher 每批事件数，默认 `20` |
+| `KF_KAFKA_LEASE` | publishing lease，默认 `30s` |
 | `KF_RETRIEVAL_MODE` | `fts`（默认）/ `vector` / `hybrid` |
 | `KF_RETRIEVAL_CANDIDATES` | Hybrid 每路候选数，默认 `20` |
 | `KF_RETRIEVAL_RRF_K` | RRF 常数，默认 `60` |
@@ -628,6 +634,7 @@ purge 完成 associations=1 contents=1 chunks=1 jobs=1 documents=1
 - [`docs/postmortem.md`](docs/postmortem.md)：故障复盘
 - [`docs/rag-eval.md`](docs/rag-eval.md)：RAG 评测
 - [`docs/adr/009-redis-cache.md`](docs/adr/009-redis-cache.md)：Redis 搜索缓存取舍
+- [`docs/adr/010-kafka-outbox.md`](docs/adr/010-kafka-outbox.md)：Kafka 事件 outbox 取舍
 
 最短路径：
 

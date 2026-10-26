@@ -36,6 +36,7 @@ func clearEnv(t *testing.T) {
 		envEmbeddingOllamaURL, envEmbeddingModel, envEmbeddingTimeout, envEmbeddingBatchSize,
 		envQdrantURL, envQdrantCollection, envQdrantVectorSize, envQdrantTimeout,
 		envRedisAddr, envRedisPassword, envRedisDB, envRedisTimeout, envRedisSearchTTL,
+		envKafkaBrokers, envKafkaTopic, envKafkaGroupID, envKafkaTimeout, envKafkaBatch, envKafkaLease,
 		envRetrievalMode, envRetrievalCandidates, envRetrievalRRFK, envAuthAPIKey,
 	} {
 		old, existed := os.LookupEnv(key)
@@ -865,6 +866,67 @@ func TestRedisValidation(t *testing.T) {
 		{name: "db too large", mutate: func(c *Config) { c.Redis.DB = 16 }},
 		{name: "timeout zero", mutate: func(c *Config) { c.Redis.Timeout = 0 }},
 		{name: "ttl zero", mutate: func(c *Config) { c.Redis.SearchTTL = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("应当校验失败")
+			}
+		})
+	}
+}
+
+func TestKafkaDefaultsAndBrokerList(t *testing.T) {
+	clearEnv(t)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Kafka.Enabled() {
+		t.Fatal("默认不应启用 Kafka")
+	}
+	if cfg.Kafka.Topic != "knowflow.document.events" || cfg.Kafka.GroupID != "knowflow-embed" {
+		t.Fatalf("kafka = %+v", cfg.Kafka)
+	}
+	t.Setenv(envKafkaBrokers, " kafka-1:9092, kafka-2:9092 ,")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Kafka.BrokerList()
+	if len(got) != 2 || got[0] != "kafka-1:9092" || got[1] != "kafka-2:9092" {
+		t.Fatalf("brokers = %#v", got)
+	}
+}
+
+func TestKafkaEnvParseErrors(t *testing.T) {
+	tests := []struct{ key, value string }{
+		{envKafkaTimeout, "nope"},
+		{envKafkaLease, "nope"},
+		{envKafkaBatch, "x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, tt.value)
+			if _, err := Load(""); err == nil {
+				t.Fatal("应当返回解析错误")
+			}
+		})
+	}
+}
+
+func TestKafkaValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "empty topic", mutate: func(c *Config) { c.Kafka.Brokers = "kafka:9092"; c.Kafka.Topic = "" }},
+		{name: "empty group", mutate: func(c *Config) { c.Kafka.Brokers = "kafka:9092"; c.Kafka.GroupID = "" }},
+		{name: "bad batch", mutate: func(c *Config) { c.Kafka.Batch = 0 }},
+		{name: "bad lease", mutate: func(c *Config) { c.Kafka.Lease = 0 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

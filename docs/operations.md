@@ -63,6 +63,23 @@ docker compose -f deploy/docker-compose.prod.yml exec redis redis-cli --scan --p
 - 写操作会 `INCR search:version`，旧 key 靠 TTL 自然过期。
 - 不要用 `KEYS *` / `FLUSHALL` 做日常操作。
 
+## 2.3 Kafka 事件
+
+```bash
+# 未发布事件
+docker compose -f deploy/docker-compose.prod.yml exec mysql   mysql -uknowflow -p -D knowflow -e   "SELECT status, COUNT(*) FROM document_events GROUP BY status;"
+
+# topic
+docker compose -f deploy/docker-compose.prod.yml exec kafka   /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe   --topic knowflow.document.events
+
+# 消费组 lag
+docker compose -f deploy/docker-compose.prod.yml exec kafka   /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092   --describe --group knowflow-embed
+```
+
+- `publishing` 超过 lease 会被 dispatcher 回收并重复投递；消费必须幂等。
+- `dead` 表示超过 max attempts；需要人工检查后重置为 `pending` 或丢弃。
+- Kafka 不可用时 dispatcher 重试，`embed` 轮询 worker 仍可处理 DB job。
+
 ## 3. 常用 SQL
 
 当前时间统一 UTC。

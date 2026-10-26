@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -81,6 +82,14 @@ const (
 	envRedisDB        = EnvPrefix + "REDIS_DB"
 	envRedisTimeout   = EnvPrefix + "REDIS_TIMEOUT"
 	envRedisSearchTTL = EnvPrefix + "REDIS_SEARCH_TTL"
+
+	// Kafka（可选）。Brokers 为空表示关闭事件通道。
+	envKafkaBrokers = EnvPrefix + "KAFKA_BROKERS"
+	envKafkaTopic   = EnvPrefix + "KAFKA_TOPIC"
+	envKafkaGroupID = EnvPrefix + "KAFKA_GROUP_ID"
+	envKafkaTimeout = EnvPrefix + "KAFKA_TIMEOUT"
+	envKafkaBatch   = EnvPrefix + "KAFKA_BATCH_SIZE"
+	envKafkaLease   = EnvPrefix + "KAFKA_LEASE"
 
 	// 检索模式：fts / vector / hybrid。默认 fts，评测通过后再切 hybrid。
 	envAuthAPIKey = EnvPrefix + "AUTH_API_KEY"
@@ -157,6 +166,7 @@ type Config struct {
 	Server    Server    `yaml:"server"`
 	Database  Database  `yaml:"database"`
 	Redis     Redis     `yaml:"redis"`
+	Kafka     Kafka     `yaml:"kafka"`
 	Auth      Auth      `yaml:"auth"`
 	LLM       LLM       `yaml:"llm"`
 	Embedding Embedding `yaml:"embedding"`
@@ -199,6 +209,42 @@ type Database struct {
 	MaxIdleConns    int           `yaml:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
 	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
+}
+
+// Kafka 是可选事件通道配置。
+//
+// Brokers 为空表示关闭 Kafka；正文 outbox 仍然保留，embedding worker 可轮询 DB。
+type Kafka struct {
+	Brokers string        `yaml:"brokers"` // 逗号分隔
+	Topic   string        `yaml:"topic"`
+	GroupID string        `yaml:"group_id"`
+	Timeout time.Duration `yaml:"timeout"`
+	Batch   int           `yaml:"batch_size"`
+	Lease   time.Duration `yaml:"lease"`
+}
+
+// Enabled 报告是否配置了 Kafka。
+func (k Kafka) Enabled() bool { return strings.TrimSpace(k.Brokers) != "" }
+
+// BrokerList 把逗号分隔的 brokers 拆成切片，忽略空项。
+func (k Kafka) BrokerList() []string {
+	parts := strings.Split(k.Brokers, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// LogValue 只输出非敏感字段。
+func (k Kafka) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("brokers", k.Brokers),
+		slog.String("topic", k.Topic),
+		slog.String("group_id", k.GroupID),
+	)
 }
 
 // Redis 是可选缓存配置。
@@ -366,6 +412,14 @@ func Default() *Config {
 			ConnMaxLifetime: 30 * time.Minute,
 			ConnMaxIdleTime: 5 * time.Minute,
 		},
+		Kafka: Kafka{
+			Brokers: "",
+			Topic:   "knowflow.document.events",
+			GroupID: "knowflow-embed",
+			Timeout: 10 * time.Second,
+			Batch:   20,
+			Lease:   30 * time.Second,
+		},
 		Redis: Redis{
 			Addr:      "",
 			DB:        0,
@@ -532,6 +586,38 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：5m）: %w", envDatabaseConnIdle, v, err)
 		}
 		cfg.Database.ConnMaxIdleTime = d
+	}
+
+	// ---- Kafka ----
+	if v, ok := os.LookupEnv(envKafkaBrokers); ok {
+		cfg.Kafka.Brokers = v
+	}
+	if v, ok := os.LookupEnv(envKafkaTopic); ok {
+		cfg.Kafka.Topic = v
+	}
+	if v, ok := os.LookupEnv(envKafkaGroupID); ok {
+		cfg.Kafka.GroupID = v
+	}
+	if v, ok := os.LookupEnv(envKafkaTimeout); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：10s）: %w", envKafkaTimeout, v, err)
+		}
+		cfg.Kafka.Timeout = d
+	}
+	if v, ok := os.LookupEnv(envKafkaBatch); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：20）: %w", envKafkaBatch, v, err)
+		}
+		cfg.Kafka.Batch = n
+	}
+	if v, ok := os.LookupEnv(envKafkaLease); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：30s）: %w", envKafkaLease, v, err)
+		}
+		cfg.Kafka.Lease = d
 	}
 
 	// ---- Redis ----
@@ -735,6 +821,25 @@ func (c *Config) Validate() error {
 	if c.Database.ConnMaxIdleTime < 0 {
 		errs = append(errs, fmt.Errorf("database.conn_max_idle_time 不能为负数（0 表示不限制），当前 %s",
 			c.Database.ConnMaxIdleTime))
+	}
+
+	// ---- Kafka ----
+	if c.Kafka.Enabled() {
+		if c.Kafka.Topic == "" {
+			errs = append(errs, errors.New("kafka.topic 不能为空"))
+		}
+		if c.Kafka.GroupID == "" {
+			errs = append(errs, errors.New("kafka.group_id 不能为空"))
+		}
+	}
+	if c.Kafka.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("kafka.timeout 必须为正数，当前 %s", c.Kafka.Timeout))
+	}
+	if c.Kafka.Batch < 1 || c.Kafka.Batch > 1000 {
+		errs = append(errs, fmt.Errorf("kafka.batch_size 必须在 1~1000 之间，当前 %d", c.Kafka.Batch))
+	}
+	if c.Kafka.Lease <= 0 {
+		errs = append(errs, fmt.Errorf("kafka.lease 必须为正数，当前 %s", c.Kafka.Lease))
 	}
 
 	// ---- Redis ----

@@ -293,6 +293,8 @@
 - ✅ 生产化基线：API key 鉴权、`/readyz`、安全响应头、HTTP `/metrics`、Dockerfile、生产 Compose、
   GitHub Actions、集成覆盖率 85% 门槛、部署/运维手册
 - ✅ Day30：SSE 流式回答（真实 DeepSeek）、MCP stdio Server、压测/故障复盘/架构 20 问/Day30 复盘
+- ✅ Redis：搜索结果 cache-aside + 版本失效 + fail-open
+- ✅ Kafka：`document_events` 事务 outbox + dispatcher + consumer（DB job 仍为事实源）
 - ⬜ 下一步：M4.5 生产 embedding provider / rerank / 全量 Hybrid 评测 / 指标与限流
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
@@ -318,6 +320,9 @@ make vector-clean-once              # 跑一次 Qdrant 清理 worker（需要 Qd
 KF_RETRIEVAL_MODE=hybrid make run   # 用 Hybrid 检索（默认 fts）
 make e2e                            # 全链路 E2E（真实 MySQL/Qdrant，fake 模型）
 make mcp-build                      # 构建 MCP stdio Server 到 bin/mcp-server
+make kafka-up                       # 启动本地 Kafka（profile kafka）
+make kafka-dispatcher-once          # 发布一批 document_events
+make kafka-embed                    # Kafka 消费触发 embedding
 make coverage                       # 内部包覆盖率（门槛 85%，需要 MySQL/Qdrant）
 make docker-build                   # 生产镜像
 ```

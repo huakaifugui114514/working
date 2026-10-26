@@ -49,6 +49,11 @@ const (
 							last_error      = NULL,
 							updated_at      = new.updated_at`
 
+	// insertDocumentEvent 把“正文已替换”写入 Kafka outbox，和正文/chunks/job 同一事务。
+	insertDocumentEvent = `INSERT INTO document_events
+							(id, event_type, document_id, payload, status, attempts, available_at, created_at)
+							VALUES (?, 'document.content.replaced', ?, JSON_OBJECT('content_hash', ?), 'pending', 0, ?, ?)`
+
 	// getDocumentContentStatement 必须 JOIN documents 过滤软删：
 	// 文档软删后正文行还在（restore 要能原样恢复），但读路径不能返回它。
 	getDocumentContentStatement = `SELECT c.content, c.content_hash, c.chunker_version, c.created_at, c.updated_at
@@ -131,6 +136,15 @@ func (r *MySQLRepository) ReplaceDocumentContent(
 		documentID[:], hash[:], ContentChunkerVersion,
 		now, now, now); err != nil {
 		return fmt.Errorf("upsert embedding_jobs id(%x): %w", documentID[:], err)
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("生成 document_events id: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, insertDocumentEvent,
+		eventID[:], documentID[:], fmt.Sprintf("%x", hash), now, now); err != nil {
+		return fmt.Errorf("insert document_events id(%x): %w", documentID[:], err)
 	}
 
 	if err := tx.Commit(); err != nil {

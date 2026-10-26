@@ -28,6 +28,14 @@ database:
   conn_max_lifetime: 30m # 必须 < MySQL wait_timeout（默认 8h），否则会捡到已被服务端关闭的连接
   conn_max_idle_time: 5m # 空闲连接多久归还给 MySQL
 
+kafka:
+  brokers: "" # 逗号分隔，例如 kafka:9092；空 = 关闭 Kafka 事件通道
+  topic: "knowflow.document.events"
+  group_id: "knowflow-embed"
+  timeout: 10s
+  batch_size: 20
+  lease: 30s
+
 redis:
   addr: "" # 空 = 关闭缓存；本地/生产设为 redis:6379
   db: 0

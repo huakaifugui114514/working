@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -50,6 +51,7 @@ func TestIntegrationReplaceDocumentContent(t *testing.T) {
 
 	assertChunkRows(t, conn, doc.ID, []string{"第一段", "第二段", "第三段"})
 	assertEmbeddingJob(t, conn, doc.ID, hash1, "pending", 0)
+	assertDocumentEvent(t, conn, doc.ID, hash1)
 
 	stored, err := repo.ListDocumentChunks(ctx, doc.ID)
 	if err != nil {
@@ -393,5 +395,26 @@ func TestIntegrationGetChunksByIDs(t *testing.T) {
 	views, err = repo.GetChunksByIDs(ctx, ids, nil)
 	if err != nil || len(views) != 0 {
 		t.Fatalf("软删后 = %d, %v; want 0", len(views), err)
+	}
+}
+
+func assertDocumentEvent(t *testing.T, conn *sql.Conn, documentID uuid.UUID, hash [32]byte) {
+	t.Helper()
+	var (
+		eventType string
+		status    string
+		payload   []byte
+	)
+	err := conn.QueryRowContext(context.Background(), `SELECT event_type, status, payload
+		FROM document_events WHERE document_id=? ORDER BY created_at DESC LIMIT 1`, documentID[:]).
+		Scan(&eventType, &status, &payload)
+	if err != nil {
+		t.Fatalf("查询 document_events: %v", err)
+	}
+	if eventType != "document.content.replaced" || status != "pending" {
+		t.Fatalf("event type/status = %s/%s", eventType, status)
+	}
+	if !strings.Contains(string(payload), fmt.Sprintf("%x", hash)) {
+		t.Fatalf("event payload = %s, want hash", payload)
 	}
 }

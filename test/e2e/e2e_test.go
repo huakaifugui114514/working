@@ -260,10 +260,12 @@ func TestFullRAGHTTPFlow(t *testing.T) {
 	}
 
 	// 清理真实数据；Qdrant collection 由 t.Cleanup 删除。
+	// document_events 是 Kafka outbox，E2E 不启动 Kafka，直接按文档删除。
 	collectionUUID := uuid.MustParse(collectionID)
 	documentUUID := uuid.MustParse(documentID)
 	t.Cleanup(func() {
 		ctx := context.Background()
+		_, _ = db.ExecContext(ctx, `DELETE FROM document_events WHERE document_id=?`, documentUUID[:])
 		_, _ = db.ExecContext(ctx, `DELETE FROM vector_cleanup_jobs WHERE document_id=?`, documentUUID[:])
 		_, _ = db.ExecContext(ctx, `DELETE FROM embedding_jobs WHERE document_id=?`, documentUUID[:])
 		_, _ = db.ExecContext(ctx, `DELETE FROM document_chunks WHERE document_id=?`, documentUUID[:])

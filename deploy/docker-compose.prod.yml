@@ -39,6 +39,9 @@ x-app-env: &app-env
   KF_REDIS_DB: "0"
   KF_REDIS_TIMEOUT: 2s
   KF_REDIS_SEARCH_TTL: 30s
+  KF_KAFKA_BROKERS: kafka:9092
+  KF_KAFKA_TOPIC: knowflow.document.events
+  KF_KAFKA_GROUP_ID: knowflow-embed
   KF_RETRIEVAL_MODE: ${KF_RETRIEVAL_MODE:-hybrid}
   KF_LOG_LEVEL: ${KF_LOG_LEVEL:-info}
   KF_LOG_FORMAT: ${KF_LOG_FORMAT:-json}
@@ -80,6 +83,32 @@ services:
       timeout: 3s
       retries: 20
       start_period: 40s
+
+  kafka:
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
 
   redis:
     image: redis:7.4-alpine
@@ -162,7 +191,41 @@ services:
       qdrant:
         condition: service_started
 
+  kafka-dispatcher:
+    image: knowflow:${KF_IMAGE_TAG:-prod}
+    build: *knowflow-build
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/kafka-dispatcher"]
+    command: ["-interval", "2s"]
+    environment: *app-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+
+  kafka-embed:
+    image: knowflow:${KF_IMAGE_TAG:-prod}
+    build: *knowflow-build
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/kafka-embed"]
+    environment: *app-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   mysql-data:
   redis-data:
+  kafka-data:
   qdrant-data:

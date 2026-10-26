@@ -47,8 +47,8 @@ docker build \
 
 - 多阶段构建，运行阶段不含 Go 工具链；
 - 非 root 用户 `knowflow`；
-- 内置 `apid / migrate / purge / embed / vector-clean / mcp-server`；
-- 生产 Compose 内置 Redis（仅容器网络，不暴露宿主机）；
+- 内置 `apid / migrate / purge / embed / vector-clean / mcp-server / kafka-dispatcher / kafka-embed`；
+- 生产 Compose 内置 Redis、Kafka（仅容器网络，不暴露宿主机）；
 - 默认入口 `apid`，其他命令通过 compose `command` 覆盖；
 - 配置文件位于 `/etc/knowflow/config.yaml`，环境变量覆盖。
 

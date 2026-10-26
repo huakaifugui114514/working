@@ -114,6 +114,18 @@ embed-eval: ## 纯向量评测（需要 Ollama + bge-m3）
 embed-once: ## 处理当前到期 embedding 任务后退出（需要 Ollama + Qdrant）
 	@go run ./cmd/embed -once
 
+.PHONY: kafka-up
+kafka-up: ## 启动本地 Kafka（Compose profile kafka）
+	@docker compose -f deploy/docker-compose.yml --profile kafka up -d kafka
+
+.PHONY: kafka-dispatcher-once
+kafka-dispatcher-once: ## 发布一批 document_events 到 Kafka
+	@go run ./cmd/kafka-dispatcher -once
+
+.PHONY: kafka-embed
+kafka-embed: ## 从 Kafka 消费事件并触发 embedding worker
+	@go run ./cmd/kafka-embed
+
 .PHONY: mcp-build
 mcp-build: ## 构建 MCP stdio Server 到 bin/mcp-server
 	@mkdir -p $(BIN_DIR)
