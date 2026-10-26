@@ -65,7 +65,7 @@ test-integration: ## 跑集成测试（需要 MySQL/Qdrant；Ollama 测试可选
 
 .PHONY: e2e
 e2e: ## 全链路 E2E：真实 HTTP + MySQL + Qdrant + fake embedder/LLM
-	@go test -tags=e2e -v ./test/e2e
+	@go test -race -tags=e2e -v ./test/e2e
 
 .PHONY: coverage
 coverage: ## 生成内部包覆盖率并检查 ≥85%（需要 MySQL/Qdrant）

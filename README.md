@@ -272,7 +272,8 @@ curl -H "X-API-Key: $KF_AUTH_API_KEY" ...
 [ADR 003](docs/adr/003-collections-api.md)，documents 的关联语义与软删保留策略见
 [ADR 004](docs/adr/004-documents-api.md)，检索端点与 ngram 分页策略见
 [ADR 005](docs/adr/005-search-api.md)，Agent/RAG 契约见
-[ADR 006](docs/adr/006-agent-rag.md)。
+[ADR 006](docs/adr/006-agent-rag.md)，生产化取舍见
+[ADR 008](docs/adr/008-production-baseline.md)。
 
 错误码分两层：**业务码**在 `internal/apperr`（如 `invalid_argument`），**传输层码**在 `internal/transport/rest/respond`（如 `route_not_found`），映射只在 `respond.StatusForCode` 一处。
 
