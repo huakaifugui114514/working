@@ -17,6 +17,7 @@ import (
 
 const (
 	CodeInvalidArgument = "invalid_argument" // → 400
+	CodeUnauthorized    = "unauthorized"     // → 401，缺少/错误的 API key
 	CodeNotFound        = "not_found"        // → 404，资源不存在
 	CodeConflict        = "conflict"         // → 409，资源冲突（如重复添加文档关联）
 	CodeInternal        = "internal_error"   // → 500，兜底

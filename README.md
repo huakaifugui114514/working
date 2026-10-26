@@ -206,6 +206,7 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 |---|---|
 | `KF_CONFIG_FILE` | 指定配置文件路径（默认 `configs/config.yaml`） |
 | `KF_APP_ENV` | 运行环境：`dev` / `test` / `prod` |
+| `KF_AUTH_API_KEY` | API 鉴权 key；prod 必填，dev/test 留空表示关闭 |
 | `KF_SERVER_ADDR` | 监听地址，如 `:8080` |
 | `KF_SERVER_SHUTDOWN_TIMEOUT` | 优雅退出等待在途请求的上限，如 `15s` |
 | `KF_LOG_LEVEL` | `debug` / `info` / `warn` / `error` |
@@ -231,12 +232,14 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 - 本地要改配置用 `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改提交进仓库的那份。
 - 日志一律写 **stdout**，由容器运行时 / 日志 agent 收集，应用自身不写文件、不做轮转。
 - 密钥只从环境变量读，**不入库**。
+- `prod` 环境必须设置 `KF_AUTH_API_KEY`，否则配置校验会拒绝启动。
 
 ## 接口
 
 | 方法 | 路径 | 说明 | 状态 |
 |---|---|---|---|
 | GET | `/healthz` | 存活探针：版本号 / 启动时间 / 在途请求数 | ✅ |
+| GET | `/readyz` | 就绪探针：检查 MySQL Ping；失败返回 503 | ✅ |
 | GET | `/debug/sleep?d=3s` | 人为制造慢请求，用于验证优雅退出；**仅 `dev` 注册** | ✅ |
 | POST | `/api/v1/collections` | 创建知识库 | ✅ |
 | GET | `/api/v1/collections` | 分页列表：`limit` + `cursor` → `items` + `next_cursor` | ✅ |
@@ -255,6 +258,14 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 | POST | `/api/v1/collections/{id}/documents` | 添加文档关联；重复添加 → 409 | ✅ |
 | GET | `/api/v1/collections/{id}/documents` | 按 `added_at` 分页列出文档 | ✅ |
 | DELETE | `/api/v1/collections/{id}/documents/{document_id}` | 只移除关联，不删文档 | ✅ |
+
+鉴权：配置 `KF_AUTH_API_KEY` 后，除 `/healthz`、`/readyz` 外的接口都需要：
+
+```bash
+curl -H "Authorization: Bearer $KF_AUTH_API_KEY" ...
+# 或
+curl -H "X-API-Key: $KF_AUTH_API_KEY" ...
+```
 
 完整契约见 [`api/openapi.yaml`](api/openapi.yaml)；collections 的路径、游标和 PATCH 语义见
 [ADR 003](docs/adr/003-collections-api.md)，documents 的关联语义与软删保留策略见

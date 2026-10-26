@@ -136,6 +136,7 @@ func run() error {
 
 	svc := rest.New(*cfg, logger, version.Get(),
 		collectionService, documentService, contentService, searchService, agentService)
+	svc.SetReadiness(db)
 
 	// 6. 信号 ctx：Ctrl+C 是 SIGINT，而 k8s / docker stop 发的是 SIGTERM。
 	//    只监听 SIGINT，线上就会被 SIGKILL 硬杀，优雅退出白写。

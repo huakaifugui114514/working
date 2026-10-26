@@ -413,3 +413,43 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 		})
 	}
 }
+
+type fakeReadiness struct {
+	err error
+}
+
+func (f *fakeReadiness) PingContext(context.Context) error { return f.err }
+
+func TestReadyz(t *testing.T) {
+	t.Run("未配置", func(t *testing.T) {
+		s := newTestServerWithAll(t, nil, &fakeCollectionService{}, &fakeDocumentService{},
+			&fakeContentService{}, &fakeSearchService{}, &fakeAgentService{})
+		rec := do(t, s, http.MethodGet, "/readyz")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+	})
+
+	t.Run("依赖正常", func(t *testing.T) {
+		s := newTestServerWithAll(t, nil, &fakeCollectionService{}, &fakeDocumentService{},
+			&fakeContentService{}, &fakeSearchService{}, &fakeAgentService{})
+		s.SetReadiness(&fakeReadiness{})
+		rec := do(t, s, http.MethodGet, "/readyz")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("依赖失败", func(t *testing.T) {
+		s := newTestServerWithAll(t, nil, &fakeCollectionService{}, &fakeDocumentService{},
+			&fakeContentService{}, &fakeSearchService{}, &fakeAgentService{})
+		s.SetReadiness(&fakeReadiness{err: errors.New("db down")})
+		rec := do(t, s, http.MethodGet, "/readyz")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "db down") {
+			t.Fatalf("响应泄露内部错误: %s", rec.Body.String())
+		}
+	})
+}

@@ -76,6 +76,8 @@ const (
 	envQdrantTimeout      = EnvPrefix + "QDRANT_TIMEOUT"
 
 	// 检索模式：fts / vector / hybrid。默认 fts，评测通过后再切 hybrid。
+	envAuthAPIKey = EnvPrefix + "AUTH_API_KEY"
+
 	envRetrievalMode       = EnvPrefix + "RETRIEVAL_MODE"
 	envRetrievalCandidates = EnvPrefix + "RETRIEVAL_CANDIDATES"
 	envRetrievalRRFK       = EnvPrefix + "RETRIEVAL_RRF_K"
@@ -147,6 +149,7 @@ type Config struct {
 	App       App       `yaml:"app"`
 	Server    Server    `yaml:"server"`
 	Database  Database  `yaml:"database"`
+	Auth      Auth      `yaml:"auth"`
 	LLM       LLM       `yaml:"llm"`
 	Embedding Embedding `yaml:"embedding"`
 	Qdrant    Qdrant    `yaml:"qdrant"`
@@ -189,6 +192,22 @@ type Database struct {
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
 	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
 }
+
+// Auth 是 API 鉴权配置。
+//
+// APIKey 只从环境变量读：配置文件会跟着 Git 走遍所有 clone，环境变量不会。
+// 为空表示关闭鉴权（仅允许 dev/test；prod 校验会拒绝启动）。
+type Auth struct {
+	APIKey string `yaml:"-" json:"-"`
+}
+
+// LogValue 脱敏 API key。
+func (a Auth) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("api_key", "***"))
+}
+
+// String 覆盖 fmt 路径，避免 key 被 %v 打印。
+func (a Auth) String() string { return "Auth{api_key=***}" }
 
 // LLM 是单轮 RAG 使用的外部模型配置。
 // APIKey 只从环境变量读，配置文件里写它会被 KnownFields 直接拒绝。
@@ -539,6 +558,11 @@ func applyEnv(cfg *Config) error {
 		cfg.Qdrant.Timeout = d
 	}
 
+	// ---- Auth ----
+	if v, ok := os.LookupEnv(envAuthAPIKey); ok {
+		cfg.Auth.APIKey = v
+	}
+
 	// ---- Retrieval ----
 	if v, ok := os.LookupEnv(envRetrievalMode); ok {
 		cfg.Retrieval.Mode = RetrievalMode(v)
@@ -688,6 +712,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Qdrant.Timeout <= 0 {
 		errs = append(errs, fmt.Errorf("qdrant.timeout 必须为正数，当前 %s", c.Qdrant.Timeout))
+	}
+
+	// ---- Auth ----
+	// dev/test 允许关闭鉴权，方便本地 curl；prod 必须显式配置。
+	if c.App.Env == EnvProd && c.Auth.APIKey == "" {
+		errs = append(errs, errors.New("prod 环境必须设置 auth.api_key（KF_AUTH_API_KEY）"))
 	}
 
 	// ---- Retrieval ----

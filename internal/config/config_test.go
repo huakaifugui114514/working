@@ -35,7 +35,7 @@ func clearEnv(t *testing.T) {
 		envLLMBaseURL, envLLMModel, envLLMAPIKey, envLLMTimeout, envLLMMaxTokens,
 		envEmbeddingOllamaURL, envEmbeddingModel, envEmbeddingTimeout, envEmbeddingBatchSize,
 		envQdrantURL, envQdrantCollection, envQdrantVectorSize, envQdrantTimeout,
-		envRetrievalMode, envRetrievalCandidates, envRetrievalRRFK,
+		envRetrievalMode, envRetrievalCandidates, envRetrievalRRFK, envAuthAPIKey,
 	} {
 		old, existed := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {
@@ -134,6 +134,7 @@ server:
 `)
 
 	t.Setenv(envAppEnv, "prod")
+	t.Setenv(envAuthAPIKey, "test-api-key")
 	t.Setenv(envServerAddr, ":18080")
 	t.Setenv(envServerShutdown, "3s")
 	t.Setenv(envLogLevel, "debug")
@@ -440,6 +441,33 @@ func TestValidateDatabase(t *testing.T) {
 				t.Errorf("错误信息应包含 %q，实际: %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+// ---- Auth 相关 ----
+
+func TestAuthEnvOverride(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envAuthAPIKey, "secret")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.APIKey != "secret" {
+		t.Fatalf("api_key = %q", cfg.Auth.APIKey)
+	}
+}
+
+func TestValidateProdRequiresAPIKey(t *testing.T) {
+	cfg := Default()
+	cfg.App.Env = EnvProd
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "auth.api_key") {
+		t.Fatalf("prod 无 key 应报错，实际: %v", err)
+	}
+	cfg.Auth.APIKey = "secret"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("prod 有 key 应通过: %v", err)
 	}
 }
 

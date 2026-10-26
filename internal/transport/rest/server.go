@@ -24,6 +24,7 @@ import (
 
 const (
 	healthzStatus = "ok"
+	readyzStatus  = "ok"
 	// /debug/sleep 的参数范围与默认值。上限是"防护"而不只是"合理性"：
 	// 没有上限的话，任何人都能用 ?d=24h 占住一个连接和 goroutine。
 	defaultDebugSleep = 2 * time.Second
@@ -40,6 +41,7 @@ type Server struct {
 	contents    ContentService
 	searches    SearchService
 	agents      AgentService
+	readiness   Readiness
 	startedAt   time.Time
 
 	// inFlight 正在处理的请求数；用 atomic 而不是 Mutex：只有一个计数器、无关联状态，
@@ -50,6 +52,17 @@ type Server struct {
 
 	http *http.Server
 }
+
+// Readiness 是就绪探针依赖的最小接口；*sql.DB 天然满足。
+type Readiness interface {
+	PingContext(ctx context.Context) error
+}
+
+// SetReadiness 注入依赖检查。
+//
+// 不在 New 里加参数：就绪检查是可选的（单测/纯 handler 测试不需要 DB），
+// 但生产装配必须调用；未注入时 /readyz 返回 503，避免误报 ready。
+func (s *Server) SetReadiness(r Readiness) { s.readiness = r }
 
 // New 组装一个可运行的 Server（不启动监听）。
 //
@@ -131,6 +144,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 
 	mux.HandleFunc("POST "+collectionsPath, s.handleCreateCollection)
 	mux.HandleFunc("GET "+collectionsPath, s.handleListCollections)
@@ -163,10 +177,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/", s.handleNotFound)
 
 	var h http.Handler = mux
+	h = middleware.APIKey(s.cfg.Auth.APIKey)(h)
 	h = middleware.Recover(s.logger)(h)
 	h = middleware.AccessLog(s.logger)(h)
 	h = middleware.InFlight(&s.inFlight)(h) // 传指针，中间件才能改计数器
 	h = middleware.RequestID(h)
+	h = middleware.SecurityHeaders(h)
 	return h
 }
 
@@ -200,6 +216,27 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		InFlight: max(s.inFlight.Load()-1, 0),
 	}
 	respond.JSON(w, s.logger, http.StatusOK, resp)
+}
+
+// readyzResponse 是就绪探针的响应体。
+type readyzResponse struct {
+	Status string `json:"status"`
+}
+
+// handleReadyz 检查依赖是否可用；失败返回 503，不泄露内部错误。
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if s.readiness == nil {
+		respond.JSON(w, s.logger, http.StatusServiceUnavailable, readyzResponse{Status: "not_configured"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.readiness.PingContext(ctx); err != nil {
+		s.logger.WarnContext(r.Context(), "就绪检查失败", "error", err)
+		respond.JSON(w, s.logger, http.StatusServiceUnavailable, readyzResponse{Status: "unavailable"})
+		return
+	}
+	respond.JSON(w, s.logger, http.StatusOK, readyzResponse{Status: readyzStatus})
 }
 
 // handleDebugSleep 睡一会儿，用来验证优雅退出（仅 dev 注册）。

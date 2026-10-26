@@ -83,6 +83,8 @@ func StatusForCode(code string) int {
 	switch code {
 	case apperr.CodeInvalidArgument:
 		return http.StatusBadRequest
+	case apperr.CodeUnauthorized:
+		return http.StatusUnauthorized
 	case apperr.CodeNotFound, CodeRouteNotFound:
 		return http.StatusNotFound
 	case apperr.CodeConflict:
