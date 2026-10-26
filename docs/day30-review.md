@@ -16,7 +16,7 @@
 
 | 目标 | 状态 | 证据 |
 |---|---|---|
-| 私有 GitHub 仓库 + ≥120 commit | 部分 | 仓库已推送；commit 约 80+，未刷数量 |
+| 私有 GitHub 仓库 + ≥120 commit | 部分 | 仓库已推送；当前 80 个提交，未刷数量 |
 | `git clone` + 3 条命令起全栈 | 达成 | `cp env` → `docker compose up` → `curl /readyz`，生产 Compose 实测 |
 | service 覆盖率 ≥70% | 达成 | 内部包 87.1% |
 | 压测报告 + 瓶颈优化 | 达成 | `docs/load-test.md`：连接池 10→50，QPS +10%，p99 -28% |
