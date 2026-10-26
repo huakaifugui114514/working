@@ -484,6 +484,21 @@ make embed-eval
 - 本机无 GPU，BGE-M3 只用于本地开发/评测；生产建议 GPU 或 OpenAI-compatible embedding API。
 - 设计决策见 [ADR 007](docs/adr/007-vector-rag.md)。
 
+### Workflow（YAML DAG）
+
+`cmd/workflow` 执行 YAML DAG，节点支持 `depends_on` / `retries` / `timeout` / `when`，
+运行记录落 `workflow_runs` / `workflow_node_runs`，同一 `run_id` 重跑会跳过已成功节点。
+
+示例：`configs/workflows/pdf-ingest.yaml`（PDF → 抽取 → PUT 正文）：
+
+```bash
+go run ./cmd/workflow -file configs/workflows/pdf-ingest.yaml \
+  -api-url http://127.0.0.1:8080 -api-key "$KF_AUTH_API_KEY" \
+  -var pdf_path=/tmp/a.pdf -var document_id=<uuid>
+```
+
+详见 [ADR 012](docs/adr/012-workflow-engine.md)。
+
 ### M4.4b 异步 embedding worker
 
 `PUT /documents/{id}/content` 在同一个 MySQL 事务里写 `embedding_jobs`（outbox）；
@@ -637,6 +652,7 @@ purge 完成 associations=1 contents=1 chunks=1 jobs=1 documents=1
 - [`docs/adr/009-redis-cache.md`](docs/adr/009-redis-cache.md)：Redis 搜索缓存取舍
 - [`docs/adr/010-kafka-outbox.md`](docs/adr/010-kafka-outbox.md)：Kafka 事件 outbox 取舍
 - [`docs/adr/011-pdf-extraction.md`](docs/adr/011-pdf-extraction.md)：PDF 文本抽取取舍
+- [`docs/adr/012-workflow-engine.md`](docs/adr/012-workflow-engine.md)：Workflow 引擎取舍
 
 最短路径：
 

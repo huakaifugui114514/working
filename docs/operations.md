@@ -80,6 +80,27 @@ docker compose -f deploy/docker-compose.prod.yml exec kafka   /opt/kafka/bin/kaf
 - `dead` 表示超过 max attempts；需要人工检查后重置为 `pending` 或丢弃。
 - Kafka 不可用时 dispatcher 重试，`embed` 轮询 worker 仍可处理 DB job。
 
+## 2.4 Workflow 运行
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml exec apid   /usr/local/bin/workflow -file /etc/knowflow/workflows/pdf-ingest.yaml ...
+```
+
+（镜像内置示例在 `/etc/knowflow/workflows/`。）
+
+查看运行：
+
+```sql
+SELECT id, workflow_name, status, last_error, created_at
+FROM workflow_runs ORDER BY created_at DESC LIMIT 20;
+
+SELECT node_id, status, attempts, last_error
+FROM workflow_node_runs WHERE run_id = ? ORDER BY node_id;
+```
+
+- `succeeded` 节点在 resume 时跳过；`failed` 节点重跑。
+- 同一 run 的节点状态是断点续跑的依据。
+
 ## 3. 常用 SQL
 
 当前时间统一 UTC。

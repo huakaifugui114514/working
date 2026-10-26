@@ -114,6 +114,11 @@ embed-eval: ## 纯向量评测（需要 Ollama + bge-m3）
 embed-once: ## 处理当前到期 embedding 任务后退出（需要 Ollama + Qdrant）
 	@go run ./cmd/embed -once
 
+.PHONY: workflow-run
+workflow-run: ## 执行 YAML Workflow（FILE=...；额外参数用 ARGS）
+	@test -n "$(FILE)" || { echo "用法: make workflow-run FILE=configs/workflows/pdf-ingest.yaml ARGS='-var ...'"; exit 2; }
+	@go run ./cmd/workflow -file "$(FILE)" $(ARGS)
+
 .PHONY: kafka-up
 kafka-up: ## 启动本地 Kafka（Compose profile kafka）
 	@docker compose -f deploy/docker-compose.yml --profile kafka up -d kafka

@@ -1,0 +1,28 @@
+# PDF → 正文入库示例 Workflow。
+#
+# 运行：
+#   go run ./cmd/workflow -file configs/workflows/pdf-ingest.yaml \
+#     -api-url http://127.0.0.1:8080 \
+#     -var pdf_path=/tmp/doc.pdf \
+#     -var document_id=<uuid>
+#
+# document_id 必须是已存在的文档；http_request 会用 PUT /documents/{id}/content
+# 走现有正文事务（chunk + embedding_jobs + document_events）。
+name: pdf-ingest
+nodes:
+  - id: extract
+    action: pdf_extract
+    timeout: 30s
+    params:
+      path: "${input.pdf_path}"
+
+  - id: replace
+    action: http_request
+    depends_on: [extract]
+    retries: 2
+    timeout: 30s
+    params:
+      method: PUT
+      url: "${input.api_url}/api/v1/documents/${input.document_id}/content"
+      body:
+        content: "${extract.text}"
