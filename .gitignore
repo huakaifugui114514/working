@@ -41,3 +41,8 @@ docs/daily-log.md
 docs/README.md
 *.xlsx
 KnowFlow-30天*.md
+
+# 本地 go build 产物
+/apid
+/loadtest
+/mcp-server
