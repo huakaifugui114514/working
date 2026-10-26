@@ -33,7 +33,7 @@ GOLANGCI_LINT_VERSION := v2.14.0
 
 .PHONY: help
 help: ## 显示所有可用命令
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: fmt
 fmt: ## 格式化代码
@@ -62,6 +62,10 @@ test: ## 跑全部测试（带竞态检测）
 .PHONY: test-integration
 test-integration: ## 跑集成测试（需要 MySQL/Qdrant；Ollama 测试可选）
 	@go test -race -tags=integration -count=1 ./...
+
+.PHONY: e2e
+e2e: ## 全链路 E2E：真实 HTTP + MySQL + Qdrant + fake embedder/LLM
+	@go test -tags=e2e -v ./test/e2e
 
 .PHONY: coverage
 coverage: ## 生成内部包覆盖率并检查 ≥85%（需要 MySQL/Qdrant）

@@ -315,6 +315,7 @@ make embed-eval                     # 纯向量评测（需要 Ollama + bge-m3�
 make embed-once                     # 跑一次 embedding worker（需要 Ollama + Qdrant）
 make vector-clean-once              # 跑一次 Qdrant 清理 worker（需要 Qdrant）
 KF_RETRIEVAL_MODE=hybrid make run   # 用 Hybrid 检索（默认 fts）
+make e2e                            # 全链路 E2E（真实 MySQL/Qdrant，fake 模型）
 make coverage                       # 内部包覆盖率（门槛 85%，需要 MySQL/Qdrant）
 make docker-build                   # 生产镜像
 ```

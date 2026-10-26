@@ -650,6 +650,7 @@ CI：`.github/workflows/ci.yml`
 - gofmt / vet / golangci-lint
 - 单元测试 `-race`
 - MySQL + Qdrant 集成测试
+- 全链路 E2E（真实 HTTP + MySQL + Qdrant，fake embedding/LLM）
 - 内部包覆盖率门槛 85%
 - Docker 镜像构建
 
@@ -691,6 +692,7 @@ docs/        设计与决策记录（ADR / schema / 架构）
 make help              # 查看全部工程命令
 make check             # 提交前一键检查：gofmt + go vet + golangci-lint + go test -race
 make test-integration  # 集成测试（需要 MySQL/Qdrant）
+make e2e               # 全链路 E2E（真实 MySQL/Qdrant）
 make coverage          # 内部包覆盖率（门槛 85%）
 make docker-build      # 生产镜像
 make build             # 编译到 bin/apid（版本号由 git + ldflags 注入）

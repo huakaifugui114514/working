@@ -94,6 +94,9 @@ jobs:
       - name: 集成测试（race，无 Ollama 时自动跳过真实 embedding）
         run: go test -race -tags=integration -count=1 ./...
 
+      - name: 全链路 E2E（真实 MySQL/Qdrant，fake 模型）
+        run: go test -tags=e2e -v ./test/e2e
+
       - name: 覆盖率（内部包，门槛 85%）
         run: |
           go test -tags=integration -coverpkg=./internal/... \
