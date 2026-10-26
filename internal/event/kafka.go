@@ -9,9 +9,14 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+type kafkaWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
 // KafkaPublisher 用 segmentio/kafka-go 写事件。
 type KafkaPublisher struct {
-	writer *kafka.Writer
+	writer kafkaWriter
 }
 
 // NewKafkaPublisher 创建 writer；topic 自动创建依赖 broker 配置。
@@ -48,9 +53,15 @@ func (p *KafkaPublisher) Publish(ctx context.Context, ev Event) error {
 
 func (p *KafkaPublisher) Close() error { return p.writer.Close() }
 
+type messageReader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
 // Consumer 从 Kafka 读事件并交给 Handler；只有 Handler 成功才提交 offset。
 type Consumer struct {
-	reader  *kafka.Reader
+	reader  messageReader
 	handler func(context.Context, Event) error
 }
 

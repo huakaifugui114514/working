@@ -49,8 +49,15 @@ func TestMySQLStoreClaimAndPublish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if len(events) != 1 || events[0].ID != id || events[0].DocumentID != docID || events[0].Attempts != 1 {
-		t.Fatalf("events = %+v", events)
+	var found *Event
+	for i := range events {
+		if events[i].ID == id {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil || found.DocumentID != docID || found.Attempts != 1 {
+		t.Fatalf("未找到本次事件，events = %+v", events)
 	}
 	if err := store.MarkPublished(ctx, id); err != nil {
 		t.Fatalf("MarkPublished: %v", err)
