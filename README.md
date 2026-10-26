@@ -235,6 +235,9 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 | `KF_KAFKA_TIMEOUT` | Kafka 请求超时，默认 `10s` |
 | `KF_KAFKA_BATCH_SIZE` | dispatcher 每批事件数，默认 `20` |
 | `KF_KAFKA_LEASE` | publishing lease，默认 `30s` |
+| `KF_LLM_FALLBACK_BASE_URL` | 可选备用 LLM base URL；空 = 不降级 |
+| `KF_LLM_FALLBACK_MODEL` | 备用模型名 |
+| `KF_LLM_FALLBACK_API_KEY` | 备用 API key；只从环境变量读 |
 | `KF_RETRIEVAL_MODE` | `fts`（默认）/ `vector` / `hybrid` |
 | `KF_RETRIEVAL_CANDIDATES` | Hybrid 每路候选数，默认 `20` |
 | `KF_RETRIEVAL_RRF_K` | RRF 常数，默认 `60` |
@@ -653,6 +656,7 @@ purge 完成 associations=1 contents=1 chunks=1 jobs=1 documents=1
 - [`docs/adr/010-kafka-outbox.md`](docs/adr/010-kafka-outbox.md)：Kafka 事件 outbox 取舍
 - [`docs/adr/011-pdf-extraction.md`](docs/adr/011-pdf-extraction.md)：PDF 文本抽取取舍
 - [`docs/adr/012-workflow-engine.md`](docs/adr/012-workflow-engine.md)：Workflow 引擎取舍
+- [`docs/adr/013-llm-gateway.md`](docs/adr/013-llm-gateway.md)：LLM 模型网关取舍
 
 最短路径：
 

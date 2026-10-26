@@ -33,6 +33,7 @@ func clearEnv(t *testing.T) {
 		envDatabaseHost, envDatabasePort, envDatabaseName, envDatabaseUser, envDatabasePassword,
 		envDatabaseMaxOpenConns, envDatabaseMaxIdleConns, envDatabaseConnLife, envDatabaseConnIdle,
 		envLLMBaseURL, envLLMModel, envLLMAPIKey, envLLMTimeout, envLLMMaxTokens,
+		envLLMFallbackBaseURL, envLLMFallbackModel, envLLMFallbackAPIKey,
 		envEmbeddingOllamaURL, envEmbeddingModel, envEmbeddingTimeout, envEmbeddingBatchSize,
 		envQdrantURL, envQdrantCollection, envQdrantVectorSize, envQdrantTimeout,
 		envRedisAddr, envRedisPassword, envRedisDB, envRedisTimeout, envRedisSearchTTL,
@@ -936,5 +937,32 @@ func TestKafkaValidation(t *testing.T) {
 				t.Fatal("应当校验失败")
 			}
 		})
+	}
+}
+
+func TestLLMFallbackEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envLLMFallbackBaseURL, "https://backup.example.com")
+	t.Setenv(envLLMFallbackModel, "backup-model")
+	t.Setenv(envLLMFallbackAPIKey, "backup-key")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLM.FallbackBaseURL != "https://backup.example.com" || cfg.LLM.FallbackModel != "backup-model" || cfg.LLM.FallbackAPIKey != "backup-key" {
+		t.Fatalf("llm = %+v", cfg.LLM)
+	}
+}
+
+func TestLLMFallbackValidation(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.FallbackBaseURL = "not-a-url"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("非法 fallback URL 应校验失败")
+	}
+	cfg = Default()
+	cfg.LLM.FallbackBaseURL = "https://backup.example.com"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("缺少 fallback_model 应校验失败")
 	}
 }

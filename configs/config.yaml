@@ -49,6 +49,8 @@ llm:
   # api_key 刻意不写在这里：它只从 KF_LLM_API_KEY 读。
   timeout: 60s
   max_tokens: 1024
+  fallback_base_url: "" # 可选：主 provider 失败时切到备用
+  fallback_model: ""
 
 embedding:
   ollama_url: "http://127.0.0.1:11434"

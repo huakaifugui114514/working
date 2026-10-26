@@ -60,11 +60,14 @@ const (
 	envDatabaseConnIdle     = EnvPrefix + "DATABASE_CONN_MAX_IDLE_TIME"
 
 	// LLM / Agent 相关。API key 是密钥，只从环境变量读。
-	envLLMBaseURL   = EnvPrefix + "LLM_BASE_URL"
-	envLLMModel     = EnvPrefix + "LLM_MODEL"
-	envLLMAPIKey    = EnvPrefix + "LLM_API_KEY"
-	envLLMTimeout   = EnvPrefix + "LLM_TIMEOUT"
-	envLLMMaxTokens = EnvPrefix + "LLM_MAX_TOKENS"
+	envLLMBaseURL         = EnvPrefix + "LLM_BASE_URL"
+	envLLMModel           = EnvPrefix + "LLM_MODEL"
+	envLLMAPIKey          = EnvPrefix + "LLM_API_KEY"
+	envLLMTimeout         = EnvPrefix + "LLM_TIMEOUT"
+	envLLMMaxTokens       = EnvPrefix + "LLM_MAX_TOKENS"
+	envLLMFallbackBaseURL = EnvPrefix + "LLM_FALLBACK_BASE_URL"
+	envLLMFallbackModel   = EnvPrefix + "LLM_FALLBACK_MODEL"
+	envLLMFallbackAPIKey  = EnvPrefix + "LLM_FALLBACK_API_KEY"
 
 	// Embedding / 向量库。M4.4 的 worker 使用；apid 启动不依赖它们可达。
 	envEmbeddingOllamaURL = EnvPrefix + "EMBEDDING_OLLAMA_URL"
@@ -295,11 +298,14 @@ func (a Auth) String() string { return "Auth{api_key=***}" }
 // LLM 是单轮 RAG 使用的外部模型配置。
 // APIKey 只从环境变量读，配置文件里写它会被 KnownFields 直接拒绝。
 type LLM struct {
-	BaseURL   string        `yaml:"base_url"`
-	Model     string        `yaml:"model"`
-	APIKey    string        `yaml:"-" json:"-"` // ← 关键：不进 YAML，只从 env 读
-	Timeout   time.Duration `yaml:"timeout"`
-	MaxTokens int           `yaml:"max_tokens"`
+	BaseURL         string        `yaml:"base_url"`
+	Model           string        `yaml:"model"`
+	APIKey          string        `yaml:"-" json:"-"` // ← 关键：不进 YAML，只从 env 读
+	Timeout         time.Duration `yaml:"timeout"`
+	MaxTokens       int           `yaml:"max_tokens"`
+	FallbackBaseURL string        `yaml:"fallback_base_url"`
+	FallbackModel   string        `yaml:"fallback_model"`
+	FallbackAPIKey  string        `yaml:"-" json:"-"`
 }
 
 // LogValue 脱敏 API key，并保留可检索字段。
@@ -310,6 +316,9 @@ func (l LLM) LogValue() slog.Value {
 		slog.String("api_key", "***"),
 		slog.Duration("timeout", l.Timeout),
 		slog.Int("max_tokens", l.MaxTokens),
+		slog.String("fallback_base_url", l.FallbackBaseURL),
+		slog.String("fallback_model", l.FallbackModel),
+		slog.String("fallback_api_key", "***"),
 	)
 }
 
@@ -673,6 +682,15 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.LLM.MaxTokens = n
 	}
+	if v, ok := os.LookupEnv(envLLMFallbackBaseURL); ok {
+		cfg.LLM.FallbackBaseURL = v
+	}
+	if v, ok := os.LookupEnv(envLLMFallbackModel); ok {
+		cfg.LLM.FallbackModel = v
+	}
+	if v, ok := os.LookupEnv(envLLMFallbackAPIKey); ok {
+		cfg.LLM.FallbackAPIKey = v
+	}
 
 	// ---- Embedding / Qdrant ----
 	if v, ok := os.LookupEnv(envEmbeddingOllamaURL); ok {
@@ -868,6 +886,14 @@ func (c *Config) Validate() error {
 	}
 	if c.LLM.MaxTokens < 1 {
 		errs = append(errs, fmt.Errorf("llm.max_tokens 必须 ≥ 1，当前 %d", c.LLM.MaxTokens))
+	}
+	if c.LLM.FallbackBaseURL != "" {
+		if u, err := url.Parse(c.LLM.FallbackBaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("llm.fallback_base_url=%q 必须是 http(s) URL", c.LLM.FallbackBaseURL))
+		}
+		if c.LLM.FallbackModel == "" {
+			errs = append(errs, errors.New("llm.fallback_model 不能为空（已配置 fallback_base_url）"))
+		}
 	}
 
 	// ---- Embedding ----

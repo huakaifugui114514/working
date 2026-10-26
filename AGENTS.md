@@ -296,6 +296,7 @@
 - ✅ Redis：搜索结果 cache-aside + 版本失效 + fail-open
 - ✅ Kafka：`document_events` 事务 outbox + dispatcher + consumer（DB job 仍为事实源）
 - ✅ Workflow：YAML DAG + 拓扑/重试/超时/条件 + `workflow_runs` 断点续跑 + PDF ingest 示例
+- ✅ LLM gateway：多 provider 顺序降级 + token 统计 + SSE 流式降级
 - ⬜ 下一步：M4.5 生产 embedding provider / rerank / 全量 Hybrid 评测 / 指标与限流
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用

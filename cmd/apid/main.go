@@ -18,6 +18,7 @@ import (
 	"github.com/huakaifugui114514/working/internal/database"
 	"github.com/huakaifugui114514/working/internal/embedding"
 	"github.com/huakaifugui114514/working/internal/knowledge"
+	"github.com/huakaifugui114514/working/internal/llm/gateway"
 	"github.com/huakaifugui114514/working/internal/observability"
 	"github.com/huakaifugui114514/working/internal/qdrant"
 	"github.com/huakaifugui114514/working/internal/transport/rest"
@@ -146,7 +147,7 @@ func run() error {
 	}
 	logger.Info("Agent 检索模式", "mode", cfg.Retrieval.Mode)
 
-	llmClient, err := agent.NewDeepSeekClient(agent.DeepSeekOptions{
+	primaryLLM, err := agent.NewDeepSeekClient(agent.DeepSeekOptions{
 		BaseURL:   cfg.LLM.BaseURL,
 		APIKey:    cfg.LLM.APIKey,
 		Model:     cfg.LLM.Model,
@@ -154,14 +155,34 @@ func run() error {
 		MaxTokens: cfg.LLM.MaxTokens,
 	})
 	if err != nil {
-		return fmt.Errorf("初始化 LLM 客户端失败: %w", err)
+		return fmt.Errorf("初始化主 LLM 客户端失败: %w", err)
+	}
+	providers := []gateway.Provider{{Name: "primary", Client: primaryLLM}}
+	if cfg.LLM.FallbackBaseURL != "" {
+		fallbackLLM, err := agent.NewDeepSeekClient(agent.DeepSeekOptions{
+			BaseURL:   cfg.LLM.FallbackBaseURL,
+			APIKey:    cfg.LLM.FallbackAPIKey,
+			Model:     cfg.LLM.FallbackModel,
+			Timeout:   cfg.LLM.Timeout,
+			MaxTokens: cfg.LLM.MaxTokens,
+		})
+		if err != nil {
+			return fmt.Errorf("初始化备用 LLM 客户端失败: %w", err)
+		}
+		providers = append(providers, gateway.Provider{Name: "fallback", Client: fallbackLLM})
 	}
 	if cfg.LLM.APIKey == "" {
 		logger.Warn("KF_LLM_API_KEY 未配置，/api/v1/agent/chat 会返回 500")
 	}
+	llmGateway, err := gateway.New(providers, logger)
+	if err != nil {
+		return fmt.Errorf("初始化 LLM gateway 失败: %w", err)
+	}
+	logger.Info("LLM gateway 已装配", "providers", len(providers))
+	defer func() { logger.Info("LLM token 统计", "stats", llmGateway.Stats()) }()
 	agentService := agent.NewService(
 		retriever,
-		llmClient,
+		llmGateway,
 		collectionService,
 		agent.DefaultTopK,
 		cfg.LLM.MaxTokens,
