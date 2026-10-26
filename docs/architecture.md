@@ -13,8 +13,10 @@ Client / IDE / MCP Client
         ▼
    apid (net/http)
      │        │
-     │        └── MySQL 8.4（事实源：collections/documents/content/chunks/jobs）
+     │        ├── MySQL 8.4（事实源：collections/documents/content/chunks/jobs/events/runs）
+     │        ├── Redis（可选搜索结果缓存）
      │
+     ├── Kafka（document_events outbox → dispatcher → kafka-embed）
      ├── Qdrant（派生向量索引，可重建）
      ├── Embedding 服务（Ollama / GPU / 云 API）
      └── LLM（DeepSeek OpenAI-compatible）
@@ -128,14 +130,14 @@ SSE 版本逐 token 输出，最后 `event: done` 带 citations；LLM 不支持�
 1. **为什么 internal/ 能阻止外部引用？** Go 的 internal 规则由编译器强制，模块外无法 import。
 2. **goroutine 泄漏怎么查？** `runtime.NumGoroutine`、pprof/goroutine、trace；本项目的 SSE/worker 用 ctx + channel 关闭。
 3. **为什么系统需要最终一致？** 正文事务不能包含外部 embedding/Qdrant 调用；outbox + worker 保证可重试。
-4. **缓存穿透/击穿/雪崩？** 当前没有 Redis；用 MySQL 事实源 + Qdrant 可重建，FTS fallback；未来加缓存需防穿透。
-5. **Kafka 手动提交/重平衡？** 当前没有 Kafka；用 MySQL job 表 `SKIP LOCKED` + lease，等价解决抢占和崩溃恢复。
+4. **缓存穿透/击穿/雪崩？** Redis 只缓存搜索结果，key 带版本；miss 回 MySQL。没有布隆过滤器/单飞，热点重建会重复查几次 DB。
+5. **Kafka 手动提交/重平衡？** `kafka-embed` 手动 CommitMessages；handler 成功才提交。DB `embedding_jobs` 仍是事实源，重复消费幂等。
 6. **p99 优化了什么？** 压测发现 MySQL 连接池排队，`max_open_conns` 10→50，QPS +10%，p99 -28%。
-7. **Redis 全挂会怎样？** 未使用 Redis；Qdrant 挂时 FTS fallback，embedding 挂时任务积压。
+7. **Redis 全挂会怎样？** 启动 Ping 失败就不注入 cache；运行中 Get/Set 失败按 miss 处理，搜索直查 MySQL。
 8. **RRF 为什么比纯向量好？** 只看排名，融合关键词和语义；专有名词/短词不完全交给向量。
 9. **ReAct 终止条件？** 当前 Agent 是单轮 RAG，没有 ReAct；MCP Tools 由外部 IDE 调。未来加 max steps/timeout/tool error。
 10. **MCP Tools 和 Resources 区别？** Tools 是可执行动作，Resources 是只读上下文；本实现只做 Tools。
-11. **Workflow 节点失败怎么恢复？** 当前没有通用 Workflow；正文处理用 outbox 幂等重试，未来 YAML DAG 需运行记录。
+11. **Workflow 节点失败怎么恢复？** `workflow_node_runs` 记录 succeeded 节点；同一 run_id 重跑跳过成功节点，失败节点按 retries 重试。
 12. **QPS 再提升 10 倍改哪？** 读路径加缓存/读副本、连接池/索引、Qdrant 分片；写路径批量/队列；LLM 异步/流式。
 13. **为什么 chunk 按 rune 不按 token？** 当前 chunker 保证中文长度和稳定性；embedding/LLM token 上限由模型侧；更精确可换 tokenizer。
 14. **为什么引用 index 从 1 开始？** prompt 用 `[1]..[n]`，客户端展示自然。
@@ -149,7 +151,9 @@ SSE 版本逐 token 输出，最后 `event: done` 带 citations；LLM 不支持�
 ## 9. 已知取舍
 
 - 单租户、单 key、无 RBAC
-- MySQL + Qdrant，不引入 Redis/Kafka/ES
+- MySQL + Qdrant + Redis + Kafka；未引入 ES
+- Redis/Kafka 是 Compose 单节点，未做生产集群 HA
 - 本地 CPU BGE-M3 只用于开发/评测
-- 无 rerank、无 Workflow、无多 provider 网关
+- PDF 已支持，DOCX/OCR 未做
+- 无 rerank、无多租户/RBAC
 - Hybrid 全量评测未完成

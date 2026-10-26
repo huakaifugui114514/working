@@ -1,7 +1,7 @@
 # 故障复盘 / 演练
 
-> 原 30 天计划的 Redis/Kafka 故障演练不适用于当前架构：KnowFlow 用 MySQL outbox +
-> 独立 worker 代替 Kafka，没有引入 Redis 缓存。下面按**实际系统**做三份同等级复盘。
+> 原 30 天计划要求 Redis/Kafka 故障演练；当前已经引入两者，但仍保留三份真实组件复盘
+> （Qdrant/LLM/MySQL 连接池）。Kafka 的 topic 缺失/Redis 连接失败也有实际日志可复现。
 
 ## 1. Qdrant collection 并发创建 409
 
@@ -124,10 +124,8 @@ MySQL 连接池容量小于并发需求，请求在连接池排队。
 
 ## 与 30 天计划的差异
 
-原计划要求 Redis 挂、Kafka 堆积、慢 SQL 三份复盘。当前项目：
+补充：Kafka 首次实测时 topic 未创建，dispatcher 收到 `Unknown Topic Or Partition`，
+outbox 保持 pending 并按 attempts 重试；创建 topic（并开启 auto-create）后发布成功。
+Redis 未启动时 apid 会 Ping 失败并跳过缓存注入，搜索仍正常——这正是 fail-open 的验收。
 
-- 没有 Redis 缓存（所以没有缓存穿透/雪崩路径）；
-- 没有 Kafka，使用 MySQL `embedding_jobs` / `vector_cleanup_jobs` outbox + worker；
-- 搜索使用 MySQL FULLTEXT + Qdrant，不是 ES。
-
-这三份复盘对应真实组件：Qdrant、LLM、MySQL 连接池；没有为了“对齐计划”引入不必要的中间件。
+三份主复盘对应 Qdrant、LLM、MySQL 连接池；Redis/Kafka 的故障路径记录在上面。

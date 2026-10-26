@@ -45,7 +45,7 @@ func TestMySQLStoreClaimAndPublish(t *testing.T) {
 	if _, err := store.RequeueExpired(ctx); err != nil {
 		t.Fatalf("RequeueExpired: %v", err)
 	}
-	events, err := store.Claim(ctx, 10, time.Minute)
+	events, err := store.Claim(ctx, 1000, time.Minute)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}

@@ -297,7 +297,7 @@
 - ✅ Kafka：`document_events` 事务 outbox + dispatcher + consumer（DB job 仍为事实源）
 - ✅ Workflow：YAML DAG + 拓扑/重试/超时/条件 + `workflow_runs` 断点续跑 + PDF ingest 示例
 - ✅ LLM gateway：多 provider 顺序降级 + token 统计 + SSE 流式降级
-- ⬜ 下一步：M4.5 生产 embedding provider / rerank / 全量 Hybrid 评测 / 指标与限流
+- ⬜ 下一步：生产 embedding provider / rerank / 全量 Hybrid 评测 / 配额与限流 / Kafka-Redis 集群 HA
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -312,7 +312,7 @@ make run                   # 本地起服务（默认 :8080；需要 MySQL + KF_
 make build                 # 编译到 bin/apid，版本号由 git + ldflags 注入
 KF_SERVER_ADDR=:18080 ./bin/apid   # 环境变量覆盖配置（验证配置分层）
 curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / 在途请求数
-go run ./cmd/migrate up             # 应用迁移（当前 version=5）
+go run ./cmd/migrate up             # 应用迁移（当前 version=7）
 go run ./cmd/purge -dry-run         # 软删清理预演；确认后去掉 -dry-run
 make ai-up                          # 启动本地 Ollama + Qdrant（M4.4）
 make ai-model                       # 拉取 bge-m3（约 1.2 GB）
