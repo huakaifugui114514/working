@@ -265,6 +265,7 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 | POST | `/api/v1/documents/{id}/restore` | 恢复软删文档；本来没删 → 409 | ✅ |
 | POST | `/api/v1/collections/{id}/restore` | 恢复软删知识库；本来没删 → 409 | ✅ |
 | PUT | `/api/v1/documents/{id}/content` | 整体替换正文（content + SHA-256 + chunks 原子替换） | ✅ |
+| POST | `/api/v1/documents/{id}/file` | 上传 PDF，抽取文本后替换正文（multipart `file`） | ✅ |
 | GET | `/api/v1/search` | ngram FULLTEXT 检索 chunk；`q` 2..256 rune，`offset+limit<=1000` | ✅ |
 | POST | `/api/v1/agent/chat` | 单轮 RAG 问答；答案 + citations | ✅ |
 | POST | `/api/v1/agent/chat/stream` | 单轮 RAG SSE 流式回答；`token` / `done` / `error` | ✅ |
@@ -635,6 +636,7 @@ purge 完成 associations=1 contents=1 chunks=1 jobs=1 documents=1
 - [`docs/rag-eval.md`](docs/rag-eval.md)：RAG 评测
 - [`docs/adr/009-redis-cache.md`](docs/adr/009-redis-cache.md)：Redis 搜索缓存取舍
 - [`docs/adr/010-kafka-outbox.md`](docs/adr/010-kafka-outbox.md)：Kafka 事件 outbox 取舍
+- [`docs/adr/011-pdf-extraction.md`](docs/adr/011-pdf-extraction.md)：PDF 文本抽取取舍
 
 最短路径：
 

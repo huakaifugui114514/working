@@ -342,6 +342,40 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/documents/{id}/file:
+    parameters:
+      - $ref: '#/components/parameters/DocumentID'
+
+    post:
+      tags: [documents]
+      operationId: uploadDocumentFile
+      summary: 上传 PDF 并替换文档正文
+      description: |
+        `multipart/form-data`，字段名 `file`。服务端提取 PDF 文本后，
+        走与 `PUT /documents/{id}/content` 相同的分块/事务/outbox 流程。
+        文件名不可信，以 `%PDF-` 魔数为准；上限 20 MiB；无可提取文本返回 400。
+        成功返回 204，无响应体。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '204':
+          description: PDF 已解析并替换正文
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/collections/{id}/documents:
     parameters:
       - $ref: '#/components/parameters/CollectionID'

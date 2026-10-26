@@ -163,6 +163,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE "+documentsPath+"/{id}", s.handleDeleteDocument)
 	mux.HandleFunc("POST "+documentsPath+"/{id}/restore", s.handleRestoreDocument)
 	mux.HandleFunc("PUT "+documentsPath+"/{id}/content", s.handleReplaceContent)
+	mux.HandleFunc("POST "+documentsPath+"/{id}/file", s.handleUploadDocumentFile)
 
 	mux.HandleFunc("POST "+collectionsPath+"/{id}/documents", s.handleAddDocumentToCollection)
 	mux.HandleFunc("GET "+collectionsPath+"/{id}/documents", s.handleListDocumentsByCollection)

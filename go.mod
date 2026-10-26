@@ -6,6 +6,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
+	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/segmentio/kafka-go v0.4.47
 	gopkg.in/yaml.v3 v3.0.1
