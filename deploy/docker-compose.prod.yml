@@ -46,6 +46,9 @@ x-build: &knowflow-build
     GO_IMAGE: ${GO_IMAGE:-golang:1.27.2-alpine}
     RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.22}
     GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    VERSION: ${KF_VERSION:-dev}
+    COMMIT: ${KF_COMMIT:-unknown}
+    BUILD_TIME: ${KF_BUILD_TIME:-unknown}
 
 services:
   mysql:

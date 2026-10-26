@@ -78,6 +78,9 @@ docker-build: ## 构建生产镜像（可用 GO_IMAGE/RUNTIME_IMAGE 覆盖基础
 		--build-arg GO_IMAGE="$${GO_IMAGE:-golang:1.27.2-alpine}" \
 		--build-arg RUNTIME_IMAGE="$${RUNTIME_IMAGE:-alpine:3.22}" \
 		--build-arg GOPROXY="$${GOPROXY:-https://proxy.golang.org,direct}" \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg BUILD_TIME="$(BUILD_TIME)" \
 		.
 
 .PHONY: build
