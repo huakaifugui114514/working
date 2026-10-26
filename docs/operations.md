@@ -33,6 +33,21 @@ docker compose -f deploy/docker-compose.prod.yml logs -f embed
 docker compose -f deploy/docker-compose.prod.yml logs -f vector-clean
 ```
 
+## 2.1 Prometheus 指标
+
+```bash
+curl -H "Authorization: Bearer $KF_AUTH_API_KEY" \
+  http://127.0.0.1:8080/metrics
+```
+
+当前是进程级 HTTP 指标，例如：
+
+```text
+http_requests_total{method="POST",path="/api/v1/agent/chat",status="200"} 10
+```
+
+生产建议按 `path`/`status` 做 5xx 比例和 P95 延迟告警；worker 队列指标用 SQL 查询。
+
 ## 3. 常用 SQL
 
 当前时间统一 UTC。

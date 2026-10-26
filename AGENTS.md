@@ -290,7 +290,7 @@
   Agent 接入；FTS 无结果、Hybrid 补回正确 citation 的真实 E2E 通过
 - ✅ M4.4d `0005_vector_cleanup_jobs` + `cmd/vector-clean`：purge 后异步删除 Qdrant 向量，
   pending→done、points 1→0 真实 E2E 通过
-- ✅ 生产化基线：API key 鉴权、`/readyz`、安全响应头、Dockerfile、生产 Compose、
+- ✅ 生产化基线：API key 鉴权、`/readyz`、安全响应头、HTTP `/metrics`、Dockerfile、生产 Compose、
   GitHub Actions、集成覆盖率 85% 门槛、部署/运维手册
 - ⬜ 下一步：M4.5 生产 embedding provider / rerank / 全量 Hybrid 评测 / 指标与限流
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`

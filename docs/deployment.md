@@ -191,6 +191,35 @@ ON DUPLICATE KEY UPDATE
 
 embedding 维度变化时，Qdrant collection 的 `vector_size` 必须同步修改配置并重建 collection。
 
+## 8.1 监控
+
+`/metrics` 暴露 Prometheus text 格式（需要 API key）：
+
+```bash
+curl -H "Authorization: Bearer $KF_AUTH_API_KEY" \
+  http://127.0.0.1:8080/metrics
+```
+
+当前指标：
+
+```text
+http_requests_total{method,path,status}
+```
+
+路径中的 UUID 会归一化成 `{id}`，避免标签基数爆炸。
+Prometheus scrape 配置示例：
+
+```yaml
+scrape_configs:
+  - job_name: knowflow
+    authorization:
+      credentials: <KF_AUTH_API_KEY>
+    static_configs:
+      - targets: ["knowflow-api:8080"]
+```
+
+Worker 指标暂未暴露；通过 SQL 队列积压与日志告警，见 `operations.md`。
+
 ## 9. TLS / 反向代理
 
 应用不终止 TLS。Nginx 示例：

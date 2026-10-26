@@ -240,6 +240,7 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 |---|---|---|---|
 | GET | `/healthz` | 存活探针：版本号 / 启动时间 / 在途请求数 | ✅ |
 | GET | `/readyz` | 就绪探针：检查 MySQL Ping；失败返回 503 | ✅ |
+| GET | `/metrics` | Prometheus text 指标（需 API key） | ✅ |
 | GET | `/debug/sleep?d=3s` | 人为制造慢请求，用于验证优雅退出；**仅 `dev` 注册** | ✅ |
 | POST | `/api/v1/collections` | 创建知识库 | ✅ |
 | GET | `/api/v1/collections` | 分页列表：`limit` + `cursor` → `items` + `next_cursor` | ✅ |

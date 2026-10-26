@@ -453,3 +453,17 @@ func TestReadyz(t *testing.T) {
 		}
 	})
 }
+
+func TestMetricsEndpoint(t *testing.T) {
+	s := newTestServerWithAll(t, nil, &fakeCollectionService{}, &fakeDocumentService{},
+		&fakeContentService{}, &fakeSearchService{}, &fakeAgentService{})
+	// 先产生一个请求
+	_ = do(t, s, http.MethodGet, "/healthz")
+	rec := do(t, s, http.MethodGet, "/metrics")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "http_requests_total") {
+		t.Fatalf("metrics body 不包含指标: %s", rec.Body.String())
+	}
+}

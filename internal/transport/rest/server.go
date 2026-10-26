@@ -17,6 +17,7 @@ import (
 
 	"github.com/huakaifugui114514/working/internal/apperr"
 	"github.com/huakaifugui114514/working/internal/config"
+	"github.com/huakaifugui114514/working/internal/observability"
 	"github.com/huakaifugui114514/working/internal/transport/rest/middleware"
 	"github.com/huakaifugui114514/working/internal/transport/rest/respond"
 	"github.com/huakaifugui114514/working/internal/version"
@@ -42,6 +43,7 @@ type Server struct {
 	searches    SearchService
 	agents      AgentService
 	readiness   Readiness
+	metrics     *observability.Metrics
 	startedAt   time.Time
 
 	// inFlight 正在处理的请求数；用 atomic 而不是 Mutex：只有一个计数器、无关联状态，
@@ -103,6 +105,7 @@ func New(
 		contents:    contents,
 		searches:    searches,
 		agents:      agents,
+		metrics:     observability.NewMetrics(),
 		startedAt:   time.Now(),
 	}
 
@@ -145,6 +148,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	mux.HandleFunc("POST "+collectionsPath, s.handleCreateCollection)
 	mux.HandleFunc("GET "+collectionsPath, s.handleListCollections)
@@ -181,6 +185,7 @@ func (s *Server) routes() http.Handler {
 	h = middleware.Recover(s.logger)(h)
 	h = middleware.AccessLog(s.logger)(h)
 	h = middleware.InFlight(&s.inFlight)(h) // 传指针，中间件才能改计数器
+	h = middleware.Metrics(s.metrics)(h)
 	h = middleware.RequestID(h)
 	h = middleware.SecurityHeaders(h)
 	return h
@@ -237,6 +242,14 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, s.logger, http.StatusOK, readyzResponse{Status: readyzStatus})
+}
+
+// handleMetrics 输出 Prometheus text 格式指标。生产由 Prometheus 带 API key 抓取。
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	if err := s.metrics.WritePrometheus(w); err != nil {
+		s.logger.WarnContext(r.Context(), "写 metrics 失败", "error", err)
+	}
 }
 
 // handleDebugSleep 睡一会儿，用来验证优雅退出（仅 dev 注册）。
