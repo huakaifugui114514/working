@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/huakaifugui114514/working/internal/agent"
+	"github.com/huakaifugui114514/working/internal/cache"
 	"github.com/huakaifugui114514/working/internal/config"
 	"github.com/huakaifugui114514/working/internal/database"
 	"github.com/huakaifugui114514/working/internal/embedding"
@@ -77,6 +78,38 @@ func run() error {
 	documentService := knowledge.NewDocumentService(repo)
 	contentService := knowledge.NewContentService(repo)
 	searchService := knowledge.NewSearchService(repo, collectionService)
+
+	// Redis 是可选加速层：Redis 不可用不能阻塞服务启动，也不能让读请求变慢。
+	// 只有 Ping 成功才把 cache 注入 service；失败就完全退化为查 MySQL。
+	if cfg.Redis.Addr != "" {
+		redisCache, err := cache.NewRedis(cache.RedisOptions{
+			Addr:     cfg.Redis.Addr,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+			Timeout:  cfg.Redis.Timeout,
+		})
+		if err != nil {
+			return fmt.Errorf("初始化 Redis 客户端失败: %w", err)
+		}
+		pingCtx, cancel := context.WithTimeout(context.Background(), cfg.Redis.Timeout)
+		pingErr := redisCache.Ping(pingCtx)
+		cancel()
+		if pingErr != nil {
+			logger.Warn("Redis 不可用，搜索缓存降级为直查 MySQL", "error", pingErr)
+			_ = redisCache.Close()
+		} else {
+			defer func() {
+				if err := redisCache.Close(); err != nil {
+					logger.Error("关闭 Redis 失败", "error", err)
+				}
+			}()
+			searchService.WithCache(redisCache, cfg.Redis.SearchTTL)
+			collectionService.WithCacheVersioner(redisCache)
+			documentService.WithCacheVersioner(redisCache)
+			contentService.WithCacheVersioner(redisCache)
+			logger.Info("搜索缓存已启用", "addr", cfg.Redis.Addr, "ttl", cfg.Redis.SearchTTL)
+		}
+	}
 
 	keywordRetriever := agent.NewKeywordRetriever(searchService)
 	var retriever agent.Retriever = keywordRetriever

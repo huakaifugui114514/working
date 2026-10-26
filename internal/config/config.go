@@ -75,6 +75,13 @@ const (
 	envQdrantVectorSize   = EnvPrefix + "QDRANT_VECTOR_SIZE"
 	envQdrantTimeout      = EnvPrefix + "QDRANT_TIMEOUT"
 
+	// Redis 缓存。addr 为空表示关闭缓存；密码只从环境变量读。
+	envRedisAddr      = EnvPrefix + "REDIS_ADDR"
+	envRedisPassword  = EnvPrefix + "REDIS_PASSWORD"
+	envRedisDB        = EnvPrefix + "REDIS_DB"
+	envRedisTimeout   = EnvPrefix + "REDIS_TIMEOUT"
+	envRedisSearchTTL = EnvPrefix + "REDIS_SEARCH_TTL"
+
 	// 检索模式：fts / vector / hybrid。默认 fts，评测通过后再切 hybrid。
 	envAuthAPIKey = EnvPrefix + "AUTH_API_KEY"
 
@@ -149,6 +156,7 @@ type Config struct {
 	App       App       `yaml:"app"`
 	Server    Server    `yaml:"server"`
 	Database  Database  `yaml:"database"`
+	Redis     Redis     `yaml:"redis"`
 	Auth      Auth      `yaml:"auth"`
 	LLM       LLM       `yaml:"llm"`
 	Embedding Embedding `yaml:"embedding"`
@@ -191,6 +199,35 @@ type Database struct {
 	MaxIdleConns    int           `yaml:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
 	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
+}
+
+// Redis 是可选缓存配置。
+//
+// Addr 为空表示关闭缓存；缓存故障时业务 fail-open 继续查 MySQL。
+// Password 只从环境变量读，配置文件里写它会被 KnownFields 拒绝。
+type Redis struct {
+	Addr      string        `yaml:"addr"`
+	Password  string        `yaml:"-" json:"-"`
+	DB        int           `yaml:"db"`
+	Timeout   time.Duration `yaml:"timeout"`
+	SearchTTL time.Duration `yaml:"search_ttl"`
+}
+
+// LogValue 脱敏 Redis 密码。
+func (r Redis) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("addr", r.Addr),
+		slog.Int("db", r.DB),
+		slog.String("password", "***"),
+		slog.Duration("timeout", r.Timeout),
+		slog.Duration("search_ttl", r.SearchTTL),
+	)
+}
+
+// String 覆盖 fmt 路径，避免密码被 %v 打印。
+func (r Redis) String() string {
+	return fmt.Sprintf("Redis{addr=%s db=%d password=*** timeout=%s search_ttl=%s}",
+		r.Addr, r.DB, r.Timeout, r.SearchTTL)
 }
 
 // Auth 是 API 鉴权配置。
@@ -328,6 +365,12 @@ func Default() *Config {
 			MaxIdleConns:    5,
 			ConnMaxLifetime: 30 * time.Minute,
 			ConnMaxIdleTime: 5 * time.Minute,
+		},
+		Redis: Redis{
+			Addr:      "",
+			DB:        0,
+			Timeout:   2 * time.Second,
+			SearchTTL: 30 * time.Second,
 		},
 		LLM: LLM{
 			BaseURL:   "https://api.deepseek.com",
@@ -489,6 +532,35 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：5m）: %w", envDatabaseConnIdle, v, err)
 		}
 		cfg.Database.ConnMaxIdleTime = d
+	}
+
+	// ---- Redis ----
+	if v, ok := os.LookupEnv(envRedisAddr); ok {
+		cfg.Redis.Addr = v
+	}
+	if v, ok := os.LookupEnv(envRedisPassword); ok {
+		cfg.Redis.Password = v
+	}
+	if v, ok := os.LookupEnv(envRedisDB); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：0）: %w", envRedisDB, v, err)
+		}
+		cfg.Redis.DB = n
+	}
+	if v, ok := os.LookupEnv(envRedisTimeout); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：2s）: %w", envRedisTimeout, v, err)
+		}
+		cfg.Redis.Timeout = d
+	}
+	if v, ok := os.LookupEnv(envRedisSearchTTL); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：30s）: %w", envRedisSearchTTL, v, err)
+		}
+		cfg.Redis.SearchTTL = d
 	}
 
 	// ---- LLM ----
@@ -663,6 +735,17 @@ func (c *Config) Validate() error {
 	if c.Database.ConnMaxIdleTime < 0 {
 		errs = append(errs, fmt.Errorf("database.conn_max_idle_time 不能为负数（0 表示不限制），当前 %s",
 			c.Database.ConnMaxIdleTime))
+	}
+
+	// ---- Redis ----
+	if c.Redis.DB < 0 || c.Redis.DB > 15 {
+		errs = append(errs, fmt.Errorf("redis.db 必须在 0~15 之间，当前 %d", c.Redis.DB))
+	}
+	if c.Redis.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("redis.timeout 必须为正数，当前 %s", c.Redis.Timeout))
+	}
+	if c.Redis.SearchTTL <= 0 {
+		errs = append(errs, fmt.Errorf("redis.search_ttl 必须为正数，当前 %s", c.Redis.SearchTTL))
 	}
 
 	// ---- LLM ----

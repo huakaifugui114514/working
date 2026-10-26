@@ -35,6 +35,10 @@ x-app-env: &app-env
   KF_QDRANT_URL: http://qdrant:6333
   KF_QDRANT_COLLECTION: document_chunks
   KF_QDRANT_VECTOR_SIZE: "1024"
+  KF_REDIS_ADDR: redis:6379
+  KF_REDIS_DB: "0"
+  KF_REDIS_TIMEOUT: 2s
+  KF_REDIS_SEARCH_TTL: 30s
   KF_RETRIEVAL_MODE: ${KF_RETRIEVAL_MODE:-hybrid}
   KF_LOG_LEVEL: ${KF_LOG_LEVEL:-info}
   KF_LOG_FORMAT: ${KF_LOG_FORMAT:-json}
@@ -76,6 +80,17 @@ services:
       timeout: 3s
       retries: 20
       start_period: 40s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   qdrant:
     image: qdrant/qdrant:v1.12.4
@@ -149,4 +164,5 @@ services:
 
 volumes:
   mysql-data:
+  redis-data:
   qdrant-data:

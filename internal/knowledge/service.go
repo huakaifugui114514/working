@@ -32,7 +32,8 @@ const (
 //   - 调用 Repository 并翻译领域错误
 //   - 不处理 HTTP 状态码、JSON、cursor 编解码、SQL
 type Service struct {
-	repo Repository
+	repo      Repository
+	versioner CacheVersioner
 }
 
 // NewService 注入 Repository。repo 不能为 nil。
@@ -41,6 +42,12 @@ func NewService(repo Repository) *Service {
 		panic("knowledge.NewService: repo is nil")
 	}
 	return &Service{repo: repo}
+}
+
+// WithCacheVersioner 让 collection 写操作递增搜索缓存版本。
+func (s *Service) WithCacheVersioner(v CacheVersioner) *Service {
+	s.versioner = v
+	return s
 }
 
 // CreateCollection 校验 name/description 后创建。
@@ -62,6 +69,7 @@ func (s *Service) CreateCollection(ctx context.Context, name, description string
 	if err != nil {
 		return nil, wrapCollectionRepoError("创建知识库失败", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return c, nil
 }
 
@@ -133,6 +141,7 @@ func (s *Service) UpdateCollection(ctx context.Context, id uuid.UUID, patch Coll
 	if err != nil {
 		return nil, wrapCollectionRepoError("更新知识库失败", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return c, nil
 }
 
@@ -147,6 +156,7 @@ func (s *Service) SoftDeleteCollection(ctx context.Context, id uuid.UUID) error 
 	if err := s.repo.SoftDeleteCollection(ctx, id); err != nil {
 		return wrapCollectionRepoError("删除知识库失败", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return nil
 }
 
@@ -163,6 +173,7 @@ func (s *Service) RestoreCollection(ctx context.Context, id uuid.UUID) (*Collect
 	if err != nil {
 		return nil, wrapCollectionRestoreError("恢复知识库失败", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return c, nil
 }
 

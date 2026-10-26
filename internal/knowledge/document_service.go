@@ -34,7 +34,8 @@ const (
 // 不处理 HTTP、JSON、cursor 编解码，也不写 SQL。拆成独立类型是因为 documents
 // 和 collections 是两个聚合，测试时可以分别注入 fake。
 type DocumentService struct {
-	repo DocumentRepository
+	repo      DocumentRepository
+	versioner CacheVersioner
 }
 
 // NewDocumentService 注入 DocumentRepository。repo 不能为 nil。
@@ -43,6 +44,12 @@ func NewDocumentService(repo DocumentRepository) *DocumentService {
 		panic("knowledge.NewDocumentService: repo is nil")
 	}
 	return &DocumentService{repo: repo}
+}
+
+// WithCacheVersioner 让 document 写操作递增搜索缓存版本。
+func (s *DocumentService) WithCacheVersioner(v CacheVersioner) *DocumentService {
+	s.versioner = v
+	return s
 }
 
 // CreateDocument 校验元数据后创建文档。
@@ -78,6 +85,7 @@ func (s *DocumentService) CreateDocument(
 	if err != nil {
 		return nil, wrapDocumentRepoError("创建文档失败", "文档不存在", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return d, nil
 }
 
@@ -135,6 +143,7 @@ func (s *DocumentService) UpdateDocument(ctx context.Context, id uuid.UUID, patc
 	if err != nil {
 		return nil, wrapDocumentRepoError("更新文档失败", "文档不存在", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return d, nil
 }
 
@@ -149,6 +158,7 @@ func (s *DocumentService) SoftDeleteDocument(ctx context.Context, id uuid.UUID) 
 	if err := s.repo.SoftDeleteDocument(ctx, id); err != nil {
 		return wrapDocumentRepoError("删除文档失败", "文档不存在", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return nil
 }
 
@@ -165,6 +175,7 @@ func (s *DocumentService) RestoreDocument(ctx context.Context, id uuid.UUID) (*D
 	if err != nil {
 		return nil, wrapDocumentRepoErrorWithConflict("恢复文档失败", "文档不存在", "文档未被软删", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return d, nil
 }
 
@@ -186,6 +197,7 @@ func (s *DocumentService) AddDocumentToCollection(
 	if err != nil {
 		return nil, wrapDocumentRepoError("添加文档到知识库失败", "知识库或文档不存在", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return cd, nil
 }
 
@@ -206,6 +218,7 @@ func (s *DocumentService) RemoveDocumentFromCollection(
 	if err := s.repo.RemoveDocumentFromCollection(ctx, collectionID, documentID); err != nil {
 		return wrapDocumentRepoError("移除文档关联失败", "关联不存在", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return nil
 }
 

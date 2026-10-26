@@ -2,13 +2,18 @@ package knowledge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/huakaifugui114514/working/internal/apperr"
+	"github.com/huakaifugui114514/working/internal/cache"
 )
 
 const (
@@ -52,7 +57,15 @@ type CollectionLookup interface {
 type SearchService struct {
 	search      SearchRepository
 	collections CollectionLookup
+	cache       cache.Cache
+	cacheTTL    time.Duration
 }
+
+// SearchCacheVersionKey 是搜索结果缓存版本号。
+//
+// 写路径（正文/文档/collection）递增它，读路径把版本放进 cache key；
+// 这样不需要按 pattern 删除缓存，也不会因为 Redis SCAN 阻塞线上。
+const SearchCacheVersionKey = "search:version"
 
 // NewSearchService 注入检索仓储与 collection 查询。两者都不能为 nil。
 func NewSearchService(search SearchRepository, collections CollectionLookup) *SearchService {
@@ -63,6 +76,40 @@ func NewSearchService(search SearchRepository, collections CollectionLookup) *Se
 		panic("knowledge.NewSearchService: collections is nil")
 	}
 	return &SearchService{search: search, collections: collections}
+}
+
+// WithCache 启用搜索结果缓存；ttl <= 0 表示关闭。
+func (s *SearchService) WithCache(c cache.Cache, ttl time.Duration) *SearchService {
+	if c == nil || ttl <= 0 {
+		return s
+	}
+	s.cache = c
+	s.cacheTTL = ttl
+	return s
+}
+
+func (s *SearchService) cacheVersion(ctx context.Context) int64 {
+	if s.cache == nil {
+		return 0
+	}
+	raw, err := s.cache.Get(ctx, SearchCacheVersionKey)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func searchCacheKey(version int64, q string, collectionID *uuid.UUID, limit, offset int) string {
+	collection := ""
+	if collectionID != nil {
+		collection = collectionID.String()
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%d", q, collection, limit, offset)))
+	return fmt.Sprintf("search:v%d:%x", version, sum[:])
 }
 
 // Search 执行一次 chunk 级检索。
@@ -118,6 +165,18 @@ func (s *SearchService) Search(
 		}
 	}
 
+	cacheVersion := int64(0)
+	if s.cache != nil {
+		cacheVersion = s.cacheVersion(ctx)
+		key := searchCacheKey(cacheVersion, q, collectionID, limit, offset)
+		if raw, err := s.cache.Get(ctx, key); err == nil {
+			var cached SearchResult
+			if json.Unmarshal(raw, &cached) == nil {
+				return &cached, nil
+			}
+		}
+	}
+
 	hits, hasMore, err := s.search.Search(ctx, q, collectionID, limit, offset)
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "搜索失败")
@@ -132,5 +191,12 @@ func (s *SearchService) Search(
 		nextOffset = &next
 	}
 
-	return &SearchResult{Items: hits, NextOffset: nextOffset}, nil
+	result := &SearchResult{Items: hits, NextOffset: nextOffset}
+	if s.cache != nil {
+		if raw, err := json.Marshal(result); err == nil {
+			key := searchCacheKey(cacheVersion, q, collectionID, limit, offset)
+			_ = s.cache.Set(ctx, key, raw, s.cacheTTL)
+		}
+	}
+	return result, nil
 }

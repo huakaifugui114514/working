@@ -59,6 +59,20 @@ services:
       # 否则容器会在初始化完成前就被判成 unhealthy
       start_period: 40s
 
+  redis:
+    image: redis:7.4-alpine
+    container_name: knowflow-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # ---- M4.4：本地 embedding / 向量库（可选） ----
   # 国内网络拉不到 Docker Hub 时，可以用环境变量覆盖成镜像站：
   #   QDRANT_IMAGE=docker.m.daocloud.io/qdrant/qdrant:v1.12.4
@@ -93,5 +107,6 @@ services:
 
 volumes:
   mysql-data:
+  redis-data:
   qdrant-data:
   ollama-data:

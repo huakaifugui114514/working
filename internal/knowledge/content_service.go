@@ -16,7 +16,8 @@ import (
 // 职责边界：参数校验、分块、SHA-256、调用 ContentRepository、翻译错误；
 // 不写 SQL、不处理 HTTP/JSON。
 type ContentService struct {
-	repo ContentRepository
+	repo      ContentRepository
+	versioner CacheVersioner
 }
 
 // NewContentService 注入 ContentRepository。repo 不能为 nil。
@@ -25,6 +26,12 @@ func NewContentService(repo ContentRepository) *ContentService {
 		panic("knowledge.NewContentService: repo is nil")
 	}
 	return &ContentService{repo: repo}
+}
+
+// WithCacheVersioner 让正文替换递增搜索缓存版本。
+func (s *ContentService) WithCacheVersioner(v CacheVersioner) *ContentService {
+	s.versioner = v
+	return s
 }
 
 // ReplaceDocumentContent 校验并整体替换一篇文档的正文与 chunks。
@@ -74,6 +81,7 @@ func (s *ContentService) ReplaceDocumentContent(
 	if err := s.repo.ReplaceDocumentContent(ctx, documentID, content, hash, chunks); err != nil {
 		return wrapContentRepoError("替换文档正文失败", err)
 	}
+	bumpSearchCache(ctx, s.versioner)
 	return nil
 }
 

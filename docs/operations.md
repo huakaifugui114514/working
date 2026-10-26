@@ -48,6 +48,21 @@ http_requests_total{method="POST",path="/api/v1/agent/chat",status="200"} 10
 
 生产建议按 `path`/`status` 做 5xx 比例和 P95 延迟告警；worker 队列指标用 SQL 查询。
 
+## 2.2 Redis 缓存
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml exec redis redis-cli ping
+# PONG
+
+docker compose -f deploy/docker-compose.prod.yml exec redis redis-cli get search:version
+docker compose -f deploy/docker-compose.prod.yml exec redis redis-cli --scan --pattern 'search:v*' | head
+```
+
+- `KF_REDIS_ADDR` 为空时缓存关闭。
+- Redis 不可用不影响读写；搜索会退化为直查 MySQL。
+- 写操作会 `INCR search:version`，旧 key 靠 TTL 自然过期。
+- 不要用 `KEYS *` / `FLUSHALL` 做日常操作。
+
 ## 3. 常用 SQL
 
 当前时间统一 UTC。

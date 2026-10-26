@@ -35,6 +35,7 @@ func clearEnv(t *testing.T) {
 		envLLMBaseURL, envLLMModel, envLLMAPIKey, envLLMTimeout, envLLMMaxTokens,
 		envEmbeddingOllamaURL, envEmbeddingModel, envEmbeddingTimeout, envEmbeddingBatchSize,
 		envQdrantURL, envQdrantCollection, envQdrantVectorSize, envQdrantTimeout,
+		envRedisAddr, envRedisPassword, envRedisDB, envRedisTimeout, envRedisSearchTTL,
 		envRetrievalMode, envRetrievalCandidates, envRetrievalRRFK, envAuthAPIKey,
 	} {
 		old, existed := os.LookupEnv(key)
@@ -801,5 +802,77 @@ func assertRedacted(t *testing.T, out, secret string) {
 	}
 	if !strings.Contains(out, "***") {
 		t.Errorf("输出里应有脱敏标记 ***，实际: %s", out)
+	}
+}
+
+func TestDefaultRedisValues(t *testing.T) {
+	clearEnv(t)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Redis.Addr != "" {
+		t.Fatalf("redis.addr = %q, want empty（默认关闭缓存）", cfg.Redis.Addr)
+	}
+	if cfg.Redis.Timeout != 2*time.Second || cfg.Redis.SearchTTL != 30*time.Second {
+		t.Fatalf("redis timeouts = %s/%s", cfg.Redis.Timeout, cfg.Redis.SearchTTL)
+	}
+}
+
+func TestRedisEnvOverrides(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envRedisAddr, "redis:6379")
+	t.Setenv(envRedisPassword, "secret")
+	t.Setenv(envRedisDB, "3")
+	t.Setenv(envRedisTimeout, "1500ms")
+	t.Setenv(envRedisSearchTTL, "45s")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Redis.Addr != "redis:6379" || cfg.Redis.Password != "secret" || cfg.Redis.DB != 3 {
+		t.Fatalf("redis = %+v", cfg.Redis)
+	}
+	if cfg.Redis.Timeout != 1500*time.Millisecond || cfg.Redis.SearchTTL != 45*time.Second {
+		t.Fatalf("redis timeouts = %s/%s", cfg.Redis.Timeout, cfg.Redis.SearchTTL)
+	}
+}
+
+func TestRedisEnvParseErrors(t *testing.T) {
+	tests := []struct{ key, value string }{
+		{envRedisDB, "x"},
+		{envRedisTimeout, "nope"},
+		{envRedisSearchTTL, "nope"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, tt.value)
+			if _, err := Load(""); err == nil {
+				t.Fatal("应当返回解析错误")
+			}
+		})
+	}
+}
+
+func TestRedisValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "db negative", mutate: func(c *Config) { c.Redis.DB = -1 }},
+		{name: "db too large", mutate: func(c *Config) { c.Redis.DB = 16 }},
+		{name: "timeout zero", mutate: func(c *Config) { c.Redis.Timeout = 0 }},
+		{name: "ttl zero", mutate: func(c *Config) { c.Redis.SearchTTL = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("应当校验失败")
+			}
+		})
 	}
 }
