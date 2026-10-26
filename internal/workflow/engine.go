@@ -16,6 +16,19 @@ import (
 // params 已经过 ${...} 模板展开。
 type Action func(ctx context.Context, vars map[string]any, params map[string]any) (map[string]any, error)
 
+// RunError 汇总节点失败，保留 Unwrap 便于调用方 errors.Is。
+type RunError struct{ Failures []error }
+
+func (e *RunError) Error() string {
+	parts := make([]string, 0, len(e.Failures))
+	for _, err := range e.Failures {
+		parts = append(parts, err.Error())
+	}
+	return "workflow: run 失败: " + strings.Join(parts, "; ")
+}
+
+func (e *RunError) Unwrap() []error { return e.Failures }
+
 // Engine 执行一份 Definition。
 type Engine struct {
 	def     *Definition
@@ -82,7 +95,7 @@ func (e *Engine) Execute(ctx context.Context, runID uuid.UUID, input map[string]
 	vars := map[string]any{"input": input, "run_id": runID.String()}
 	outputs := map[string]any{}
 	status := map[string]string{}
-	var failures []string
+	var failures []error
 
 	order, err := e.def.TopoOrder()
 	if err != nil {
@@ -157,15 +170,17 @@ func (e *Engine) Execute(ctx context.Context, runID uuid.UUID, input map[string]
 		}
 		if lastErr != nil {
 			status[node.ID] = StatusFailed
-			failures = append(failures, fmt.Sprintf("%s: %v", node.ID, lastErr))
+			failures = append(failures, fmt.Errorf("%s: %w", node.ID, lastErr))
 		}
 	}
 
 	run.FinishedAt = time.Now().UTC()
 	run.Output = outputs
+	var runErr error
 	if len(failures) > 0 {
 		run.Status = StatusFailed
-		run.Error = strings.Join(failures, "; ")
+		runErr = &RunError{Failures: failures}
+		run.Error = runErr.Error()
 	} else {
 		run.Status = StatusSucceeded
 	}
@@ -173,7 +188,7 @@ func (e *Engine) Execute(ctx context.Context, runID uuid.UUID, input map[string]
 		return nil, err
 	}
 	if run.Status == StatusFailed {
-		return run, fmt.Errorf("workflow: run 失败: %s", run.Error)
+		return run, runErr
 	}
 	return run, nil
 }

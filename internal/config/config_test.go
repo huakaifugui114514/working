@@ -34,9 +34,12 @@ func clearEnv(t *testing.T) {
 		envDatabaseMaxOpenConns, envDatabaseMaxIdleConns, envDatabaseConnLife, envDatabaseConnIdle,
 		envLLMBaseURL, envLLMModel, envLLMAPIKey, envLLMTimeout, envLLMMaxTokens,
 		envLLMFallbackBaseURL, envLLMFallbackModel, envLLMFallbackAPIKey,
+		envLLMRequestsPerMin, envLLMTokensPerDay, envLLMSemanticCache, envLLMSemanticThresh,
+		envLLMSemanticMax, envLLMSemanticTTL,
 		envEmbeddingOllamaURL, envEmbeddingModel, envEmbeddingTimeout, envEmbeddingBatchSize,
 		envQdrantURL, envQdrantCollection, envQdrantVectorSize, envQdrantTimeout,
 		envRedisAddr, envRedisPassword, envRedisDB, envRedisTimeout, envRedisSearchTTL,
+		envRedisSentinels, envRedisMasterName,
 		envKafkaBrokers, envKafkaTopic, envKafkaGroupID, envKafkaTimeout, envKafkaBatch, envKafkaLease,
 		envRetrievalMode, envRetrievalCandidates, envRetrievalRRFK, envAuthAPIKey,
 	} {
@@ -964,5 +967,66 @@ func TestLLMFallbackValidation(t *testing.T) {
 	cfg.LLM.FallbackBaseURL = "https://backup.example.com"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("缺少 fallback_model 应校验失败")
+	}
+}
+
+func TestLLMQuotaCacheEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envLLMRequestsPerMin, "60")
+	t.Setenv(envLLMTokensPerDay, "100000")
+	t.Setenv(envLLMSemanticCache, "true")
+	t.Setenv(envLLMSemanticThresh, "0.9")
+	t.Setenv(envLLMSemanticMax, "50")
+	t.Setenv(envLLMSemanticTTL, "30m")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLM.RequestsPerMinute != 60 || cfg.LLM.TokensPerDay != 100000 || !cfg.LLM.SemanticCache {
+		t.Fatalf("llm = %+v", cfg.LLM)
+	}
+	if cfg.LLM.SemanticThreshold != 0.9 || cfg.LLM.SemanticMaxEntries != 50 || cfg.LLM.SemanticTTL != 30*time.Minute {
+		t.Fatalf("semantic = %+v", cfg.LLM)
+	}
+}
+
+func TestLLMQuotaCacheParseErrors(t *testing.T) {
+	tests := []struct{ key, value string }{
+		{envLLMRequestsPerMin, "x"},
+		{envLLMTokensPerDay, "x"},
+		{envLLMSemanticCache, "x"},
+		{envLLMSemanticThresh, "x"},
+		{envLLMSemanticMax, "x"},
+		{envLLMSemanticTTL, "x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, tt.value)
+			if _, err := Load(""); err == nil {
+				t.Fatal("应当返回解析错误")
+			}
+		})
+	}
+}
+
+func TestRedisSentinelEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envRedisSentinels, "s1:26379, s2:26379")
+	t.Setenv(envRedisMasterName, "knowflow-master")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Redis.Enabled() || len(cfg.Redis.SentinelList()) != 2 || cfg.Redis.MasterName != "knowflow-master" {
+		t.Fatalf("redis = %+v", cfg.Redis)
+	}
+}
+
+func TestRedisSentinelValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Redis.SentinelAddrs = "s1:26379"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("缺少 master_name 应校验失败")
 	}
 }

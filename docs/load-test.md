@@ -58,3 +58,42 @@ p50=10.633156ms p95=31.307348ms p99=45.697729ms
 - 当前本地单节点 QPS 约 1.4–1.5 万（简单 FULLTEXT 查询）。
 - 生产容量规划优先看：MySQL 连接池、FULLTEXT 写入放大、Qdrant/embedding 延迟、LLM 延迟。
 - 本次没有把 LLM 延迟混入搜索压测；Agent 的端到端延迟主要由 LLM 决定。
+
+## Redis 缓存命中压测
+
+同一台机器、同一查询、200 并发 / 5s，先预热一次让结果进入 Redis：
+
+```text
+无缓存（连接池 10）：qps=13734, p99=63.47ms
+有缓存（Redis 命中）：qps=38562, p99=20.20ms
+```
+
+结论：缓存命中把 QPS 提升约 2.8 倍，p99 降到约 1/3。缓存未命中时仍回源 MySQL；
+Redis 故障时 search cache fail-open。
+
+## HA 演练
+
+### Redis Sentinel
+
+```text
+master = 172.30.0.10:6379
+stop master
+sentinel get-master-addr-by-name knowflow-master
+=> 172.30.0.11:6379
+replica get failover:key => before
+apid /search 仍返回 200（FailoverClient 自动切 master）
+```
+
+### Kafka broker
+
+```text
+topic: partitions=3, replication-factor=3, min.insync.replicas=2
+stop kafka-2 (partition 0 leader)
+partition 0 leader -> kafka-3；ISR 从 3,1,2 收缩为 3,1
+start kafka-2；ISR 恢复为 3,1,2
+```
+
+### 消费者 lag
+
+`kafka-exporter` 已暴露 `kafka_topic_partitions` / `kafka_consumergroup_lag`，
+Prometheus 可在 `:9308/metrics` 抓取。

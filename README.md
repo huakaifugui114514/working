@@ -226,6 +226,8 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 | `KF_QDRANT_TIMEOUT` | Qdrant 请求超时，默认 `10s` |
 | `KF_REDIS_ADDR` | Redis 地址；空 = 关闭搜索缓存，默认空 |
 | `KF_REDIS_PASSWORD` | Redis 密码；只从环境变量读 |
+| `KF_REDIS_SENTINEL_ADDRS` | Sentinel 地址，逗号分隔；与 `KF_REDIS_ADDR` 二选一 |
+| `KF_REDIS_MASTER_NAME` | Sentinel master 名，例如 `knowflow-master` |
 | `KF_REDIS_DB` | Redis DB，默认 `0` |
 | `KF_REDIS_TIMEOUT` | Redis 连接/读写超时，默认 `2s` |
 | `KF_REDIS_SEARCH_TTL` | 搜索结果缓存 TTL，默认 `30s` |
@@ -238,6 +240,12 @@ GET    /api/v1/collections/{cid}/documents → 200，关联仍然存在
 | `KF_LLM_FALLBACK_BASE_URL` | 可选备用 LLM base URL；空 = 不降级 |
 | `KF_LLM_FALLBACK_MODEL` | 备用模型名 |
 | `KF_LLM_FALLBACK_API_KEY` | 备用 API key；只从环境变量读 |
+| `KF_LLM_REQUESTS_PER_MINUTE` | 进程内请求配额；0 = 不限 |
+| `KF_LLM_TOKENS_PER_DAY` | 进程内 token 日配额；0 = 不限 |
+| `KF_LLM_SEMANTIC_CACHE` | 是否启用进程内语义缓存 |
+| `KF_LLM_SEMANTIC_THRESHOLD` | 余弦阈值，默认 `0.92` |
+| `KF_LLM_SEMANTIC_MAX_ENTRIES` | 最大条目，默认 `1000` |
+| `KF_LLM_SEMANTIC_TTL` | 缓存 TTL，默认 `1h` |
 | `KF_RETRIEVAL_MODE` | `fts`（默认）/ `vector` / `hybrid` |
 | `KF_RETRIEVAL_CANDIDATES` | Hybrid 每路候选数，默认 `20` |
 | `KF_RETRIEVAL_RRF_K` | RRF 常数，默认 `60` |
@@ -657,6 +665,7 @@ purge 完成 associations=1 contents=1 chunks=1 jobs=1 documents=1
 - [`docs/adr/011-pdf-extraction.md`](docs/adr/011-pdf-extraction.md)：PDF 文本抽取取舍
 - [`docs/adr/012-workflow-engine.md`](docs/adr/012-workflow-engine.md)：Workflow 引擎取舍
 - [`docs/adr/013-llm-gateway.md`](docs/adr/013-llm-gateway.md)：LLM 模型网关取舍
+- [`docs/adr/014-ha-infra.md`](docs/adr/014-ha-infra.md)：Redis/Kafka HA 与演练
 
 最短路径：
 

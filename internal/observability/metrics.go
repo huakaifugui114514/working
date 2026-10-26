@@ -15,6 +15,25 @@ import (
 type Metrics struct {
 	mu       sync.Mutex
 	requests map[metricKey]uint64
+	llmStats func() map[string]LLMStat
+}
+
+// LLMStat 是模型网关的 provider 统计快照。
+type LLMStat struct {
+	Requests         int
+	Errors           int
+	PromptTokens     int
+	CompletionTokens int
+}
+
+// SetLLMStats 注入 LLM 统计回调；回调在 /metrics 抓取时调用。
+func (m *Metrics) SetLLMStats(fn func() map[string]LLMStat) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.llmStats = fn
+	m.mu.Unlock()
 }
 
 type metricKey struct {
@@ -68,11 +87,53 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 	if _, err := fmt.Fprintln(w, "# TYPE http_requests_total counter"); err != nil {
 		return err
 	}
+	// 先在锁内取回调，避免写 metrics 时持有锁调用网关。
+	m.mu.Lock()
+	llmStats := m.llmStats
+	m.mu.Unlock()
 	for _, k := range keys {
 		path := strings.ReplaceAll(strings.ReplaceAll(k.path, `\`, `\\`), `"`, `\"`)
 		if _, err := fmt.Fprintf(w,
 			"http_requests_total{method=%q,path=%q,status=%q} %d\n",
 			k.method, path, fmt.Sprintf("%d", k.status), values[k]); err != nil {
+			return err
+		}
+	}
+
+	if llmStats == nil {
+		return nil
+	}
+	stats := llmStats()
+	names := make([]string, 0, len(stats))
+	for name := range stats {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if _, err := fmt.Fprintln(w, "# HELP llm_requests_total LLM provider 请求数"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "# TYPE llm_requests_total counter"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "# TYPE llm_errors_total counter"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "# TYPE llm_tokens_total counter"); err != nil {
+		return err
+	}
+	for _, name := range names {
+		st := stats[name]
+		label := strings.ReplaceAll(strings.ReplaceAll(name, `\`, `\\`), `"`, `\"`)
+		if _, err := fmt.Fprintf(w, "llm_requests_total{provider=%q} %d\n", label, st.Requests); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "llm_errors_total{provider=%q} %d\n", label, st.Errors); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "llm_tokens_total{provider=%q,kind=%q} %d\n", label, "prompt", st.PromptTokens); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "llm_tokens_total{provider=%q,kind=%q} %d\n", label, "completion", st.CompletionTokens); err != nil {
 			return err
 		}
 	}

@@ -60,6 +60,11 @@ type Readiness interface {
 	PingContext(ctx context.Context) error
 }
 
+// SetLLMStats 注入模型网关统计；/metrics 抓取时回调。
+func (s *Server) SetLLMStats(fn func() map[string]observability.LLMStat) {
+	s.metrics.SetLLMStats(fn)
+}
+
 // SetReadiness 注入依赖检查。
 //
 // 不在 New 里加参数：就绪检查是可选的（单测/纯 handler 测试不需要 DB），

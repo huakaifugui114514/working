@@ -35,11 +35,12 @@ x-app-env: &app-env
   KF_QDRANT_URL: http://qdrant:6333
   KF_QDRANT_COLLECTION: document_chunks
   KF_QDRANT_VECTOR_SIZE: "1024"
-  KF_REDIS_ADDR: redis:6379
+  KF_REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+  KF_REDIS_MASTER_NAME: knowflow-master
   KF_REDIS_DB: "0"
   KF_REDIS_TIMEOUT: 2s
   KF_REDIS_SEARCH_TTL: 30s
-  KF_KAFKA_BROKERS: kafka:9092
+  KF_KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
   KF_KAFKA_TOPIC: knowflow.document.events
   KF_KAFKA_GROUP_ID: knowflow-embed
   KF_RETRIEVAL_MODE: ${KF_RETRIEVAL_MODE:-hybrid}
@@ -84,25 +85,27 @@ services:
       retries: 20
       start_period: 40s
 
-  kafka:
+  kafka-1:
     image: apache/kafka:3.9.0
     restart: unless-stopped
-    environment:
-      KAFKA_NODE_ID: 1
+    environment: &kafka-common
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_MIN_INSYNC_REPLICAS: 2
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 3
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092
     volumes:
-      - kafka-data:/var/lib/kafka/data
+      - kafka-1-data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
       interval: 10s
@@ -110,9 +113,77 @@ services:
       retries: 20
       start_period: 20s
 
-  redis:
+  kafka-2:
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
+    environment:
+      <<: *kafka-common
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092
+    volumes:
+      - kafka-2-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  kafka-3:
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
+    environment:
+      <<: *kafka-common
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092
+    volumes:
+      - kafka-3-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092,kafka-2:9092,kafka-3:9092           --create --if-not-exists --topic knowflow.document.events           --partitions 3 --replication-factor 3 --config min.insync.replicas=2
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    restart: "no"
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    restart: unless-stopped
+    command:
+      - --kafka.server=kafka-1:9092
+      - --kafka.server=kafka-2:9092
+      - --kafka.server=kafka-3:9092
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    ports:
+      - "${KAFKA_EXPORTER_PORT:-9308}:9308"
+
+  redis-master:
     image: redis:7.4-alpine
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
     volumes:
       - redis-data:/data
     healthcheck:
@@ -120,6 +191,41 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  redis-replica:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--replicaof", "172.30.0.10", "6379"]
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
+    volumes:
+      - redis-replica-data:/data
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  sentinel-1: &sentinel
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"]
+    volumes:
+      - ./redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "sentinel", "get-master-addr-by-name", "knowflow-master"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  sentinel-2:
+    <<: *sentinel
+  sentinel-3:
+    <<: *sentinel
 
   qdrant:
     image: qdrant/qdrant:v1.12.4
@@ -203,8 +309,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   kafka-embed:
     image: knowflow:${KF_IMAGE_TAG:-prod}
@@ -219,13 +325,22 @@ services:
         condition: service_completed_successfully
       qdrant:
         condition: service_started
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
 volumes:
   mysql-data:
   redis-data:
-  kafka-data:
+  redis-replica-data:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
   qdrant-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

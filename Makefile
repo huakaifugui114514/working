@@ -114,6 +114,11 @@ embed-eval: ## 纯向量评测（需要 Ollama + bge-m3）
 embed-once: ## 处理当前到期 embedding 任务后退出（需要 Ollama + Qdrant）
 	@go run ./cmd/embed -once
 
+.PHONY: loadtest
+loadtest: ## 压测：make loadtest URL=... ARGS='-concurrency 200 -duration 5s -api-key ...'
+	@test -n "$(URL)" || { echo "用法: make loadtest URL=http://127.0.0.1:8080/api/v1/search?... ARGS='...'"; exit 2; }
+	@go run ./cmd/loadtest -url "$(URL)" $(ARGS)
+
 .PHONY: workflow-run
 workflow-run: ## 执行 YAML Workflow（FILE=...；额外参数用 ARGS）
 	@test -n "$(FILE)" || { echo "用法: make workflow-run FILE=configs/workflows/pdf-ingest.yaml ARGS='-var ...'"; exit 2; }

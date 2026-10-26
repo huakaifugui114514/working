@@ -68,6 +68,12 @@ const (
 	envLLMFallbackBaseURL = EnvPrefix + "LLM_FALLBACK_BASE_URL"
 	envLLMFallbackModel   = EnvPrefix + "LLM_FALLBACK_MODEL"
 	envLLMFallbackAPIKey  = EnvPrefix + "LLM_FALLBACK_API_KEY"
+	envLLMRequestsPerMin  = EnvPrefix + "LLM_REQUESTS_PER_MINUTE"
+	envLLMTokensPerDay    = EnvPrefix + "LLM_TOKENS_PER_DAY"
+	envLLMSemanticCache   = EnvPrefix + "LLM_SEMANTIC_CACHE"
+	envLLMSemanticThresh  = EnvPrefix + "LLM_SEMANTIC_THRESHOLD"
+	envLLMSemanticMax     = EnvPrefix + "LLM_SEMANTIC_MAX_ENTRIES"
+	envLLMSemanticTTL     = EnvPrefix + "LLM_SEMANTIC_TTL"
 
 	// Embedding / 向量库。M4.4 的 worker 使用；apid 启动不依赖它们可达。
 	envEmbeddingOllamaURL = EnvPrefix + "EMBEDDING_OLLAMA_URL"
@@ -80,11 +86,13 @@ const (
 	envQdrantTimeout      = EnvPrefix + "QDRANT_TIMEOUT"
 
 	// Redis 缓存。addr 为空表示关闭缓存；密码只从环境变量读。
-	envRedisAddr      = EnvPrefix + "REDIS_ADDR"
-	envRedisPassword  = EnvPrefix + "REDIS_PASSWORD"
-	envRedisDB        = EnvPrefix + "REDIS_DB"
-	envRedisTimeout   = EnvPrefix + "REDIS_TIMEOUT"
-	envRedisSearchTTL = EnvPrefix + "REDIS_SEARCH_TTL"
+	envRedisAddr       = EnvPrefix + "REDIS_ADDR"
+	envRedisPassword   = EnvPrefix + "REDIS_PASSWORD"
+	envRedisDB         = EnvPrefix + "REDIS_DB"
+	envRedisTimeout    = EnvPrefix + "REDIS_TIMEOUT"
+	envRedisSearchTTL  = EnvPrefix + "REDIS_SEARCH_TTL"
+	envRedisSentinels  = EnvPrefix + "REDIS_SENTINEL_ADDRS"
+	envRedisMasterName = EnvPrefix + "REDIS_MASTER_NAME"
 
 	// Kafka（可选）。Brokers 为空表示关闭事件通道。
 	envKafkaBrokers = EnvPrefix + "KAFKA_BROKERS"
@@ -255,11 +263,30 @@ func (k Kafka) LogValue() slog.Value {
 // Addr 为空表示关闭缓存；缓存故障时业务 fail-open 继续查 MySQL。
 // Password 只从环境变量读，配置文件里写它会被 KnownFields 拒绝。
 type Redis struct {
-	Addr      string        `yaml:"addr"`
-	Password  string        `yaml:"-" json:"-"`
-	DB        int           `yaml:"db"`
-	Timeout   time.Duration `yaml:"timeout"`
-	SearchTTL time.Duration `yaml:"search_ttl"`
+	Addr          string        `yaml:"addr"`
+	SentinelAddrs string        `yaml:"sentinel_addrs"` // 逗号分隔
+	MasterName    string        `yaml:"master_name"`
+	Password      string        `yaml:"-" json:"-"`
+	DB            int           `yaml:"db"`
+	Timeout       time.Duration `yaml:"timeout"`
+	SearchTTL     time.Duration `yaml:"search_ttl"`
+}
+
+// Enabled 报告是否配置了单机或 Sentinel Redis。
+func (r Redis) Enabled() bool {
+	return strings.TrimSpace(r.Addr) != "" || strings.TrimSpace(r.SentinelAddrs) != ""
+}
+
+// SentinelList 把逗号分隔的 sentinel 地址拆成切片。
+func (r Redis) SentinelList() []string {
+	parts := strings.Split(r.SentinelAddrs, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // LogValue 脱敏 Redis 密码。
@@ -268,6 +295,8 @@ func (r Redis) LogValue() slog.Value {
 		slog.String("addr", r.Addr),
 		slog.Int("db", r.DB),
 		slog.String("password", "***"),
+		slog.String("sentinel_addrs", r.SentinelAddrs),
+		slog.String("master_name", r.MasterName),
 		slog.Duration("timeout", r.Timeout),
 		slog.Duration("search_ttl", r.SearchTTL),
 	)
@@ -306,6 +335,13 @@ type LLM struct {
 	FallbackBaseURL string        `yaml:"fallback_base_url"`
 	FallbackModel   string        `yaml:"fallback_model"`
 	FallbackAPIKey  string        `yaml:"-" json:"-"`
+
+	RequestsPerMinute  int           `yaml:"requests_per_minute"`
+	TokensPerDay       int           `yaml:"tokens_per_day"`
+	SemanticCache      bool          `yaml:"semantic_cache"`
+	SemanticThreshold  float64       `yaml:"semantic_threshold"`
+	SemanticMaxEntries int           `yaml:"semantic_max_entries"`
+	SemanticTTL        time.Duration `yaml:"semantic_ttl"`
 }
 
 // LogValue 脱敏 API key，并保留可检索字段。
@@ -436,10 +472,13 @@ func Default() *Config {
 			SearchTTL: 30 * time.Second,
 		},
 		LLM: LLM{
-			BaseURL:   "https://api.deepseek.com",
-			Model:     "deepseek-chat",
-			Timeout:   60 * time.Second,
-			MaxTokens: 1024,
+			BaseURL:            "https://api.deepseek.com",
+			Model:              "deepseek-chat",
+			Timeout:            60 * time.Second,
+			MaxTokens:          1024,
+			SemanticThreshold:  0.92,
+			SemanticMaxEntries: 1000,
+			SemanticTTL:        time.Hour,
 		},
 		Embedding: Embedding{
 			OllamaURL: "http://127.0.0.1:11434",
@@ -657,6 +696,12 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Redis.SearchTTL = d
 	}
+	if v, ok := os.LookupEnv(envRedisSentinels); ok {
+		cfg.Redis.SentinelAddrs = v
+	}
+	if v, ok := os.LookupEnv(envRedisMasterName); ok {
+		cfg.Redis.MasterName = v
+	}
 
 	// ---- LLM ----
 	if v, ok := os.LookupEnv(envLLMBaseURL); ok {
@@ -690,6 +735,48 @@ func applyEnv(cfg *Config) error {
 	}
 	if v, ok := os.LookupEnv(envLLMFallbackAPIKey); ok {
 		cfg.LLM.FallbackAPIKey = v
+	}
+	if v, ok := os.LookupEnv(envLLMRequestsPerMin); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：60）: %w", envLLMRequestsPerMin, v, err)
+		}
+		cfg.LLM.RequestsPerMinute = n
+	}
+	if v, ok := os.LookupEnv(envLLMTokensPerDay); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：100000）: %w", envLLMTokensPerDay, v, err)
+		}
+		cfg.LLM.TokensPerDay = n
+	}
+	if v, ok := os.LookupEnv(envLLMSemanticCache); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法 bool: %w", envLLMSemanticCache, v, err)
+		}
+		cfg.LLM.SemanticCache = b
+	}
+	if v, ok := os.LookupEnv(envLLMSemanticThresh); ok {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法小数（示例：0.92）: %w", envLLMSemanticThresh, v, err)
+		}
+		cfg.LLM.SemanticThreshold = f
+	}
+	if v, ok := os.LookupEnv(envLLMSemanticMax); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：1000）: %w", envLLMSemanticMax, v, err)
+		}
+		cfg.LLM.SemanticMaxEntries = n
+	}
+	if v, ok := os.LookupEnv(envLLMSemanticTTL); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：1h）: %w", envLLMSemanticTTL, v, err)
+		}
+		cfg.LLM.SemanticTTL = d
 	}
 
 	// ---- Embedding / Qdrant ----
@@ -861,6 +948,9 @@ func (c *Config) Validate() error {
 	}
 
 	// ---- Redis ----
+	if c.Redis.Enabled() && len(c.Redis.SentinelList()) > 0 && c.Redis.MasterName == "" {
+		errs = append(errs, errors.New("redis.master_name 不能为空（已配置 sentinel_addrs）"))
+	}
 	if c.Redis.DB < 0 || c.Redis.DB > 15 {
 		errs = append(errs, fmt.Errorf("redis.db 必须在 0~15 之间，当前 %d", c.Redis.DB))
 	}
@@ -894,6 +984,18 @@ func (c *Config) Validate() error {
 		if c.LLM.FallbackModel == "" {
 			errs = append(errs, errors.New("llm.fallback_model 不能为空（已配置 fallback_base_url）"))
 		}
+	}
+	if c.LLM.RequestsPerMinute < 0 || c.LLM.TokensPerDay < 0 {
+		errs = append(errs, errors.New("llm.requests_per_minute/tokens_per_day 不能为负数"))
+	}
+	if c.LLM.SemanticThreshold < 0 || c.LLM.SemanticThreshold > 1 {
+		errs = append(errs, fmt.Errorf("llm.semantic_threshold 必须在 0~1，当前 %v", c.LLM.SemanticThreshold))
+	}
+	if c.LLM.SemanticMaxEntries < 1 {
+		errs = append(errs, fmt.Errorf("llm.semantic_max_entries 必须 ≥ 1，当前 %d", c.LLM.SemanticMaxEntries))
+	}
+	if c.LLM.SemanticTTL <= 0 {
+		errs = append(errs, fmt.Errorf("llm.semantic_ttl 必须为正数，当前 %s", c.LLM.SemanticTTL))
 	}
 
 	// ---- Embedding ----

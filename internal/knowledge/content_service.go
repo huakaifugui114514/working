@@ -9,15 +9,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/huakaifugui114514/working/internal/apperr"
+	"github.com/huakaifugui114514/working/internal/workflow"
 )
 
 // ContentService 是文档正文入库的业务层。
 //
-// 职责边界：参数校验、分块、SHA-256、调用 ContentRepository、翻译错误；
-// 不写 SQL、不处理 HTTP/JSON。
+// 正文入库本身也走 YAML 同款 DAG 引擎：chunk → persist。
+// 这样 PDF/纯文本/Workflow 入口共用同一条流水线，而不是各写一套。
 type ContentService struct {
-	repo      ContentRepository
-	versioner CacheVersioner
+	repo       ContentRepository
+	versioner  CacheVersioner
+	definition *workflow.Definition
 }
 
 // NewContentService 注入 ContentRepository。repo 不能为 nil。
@@ -25,7 +27,17 @@ func NewContentService(repo ContentRepository) *ContentService {
 	if repo == nil {
 		panic("knowledge.NewContentService: repo is nil")
 	}
-	return &ContentService{repo: repo}
+	def := &workflow.Definition{
+		Name: "document-content",
+		Nodes: []workflow.Node{
+			{ID: "chunk", Action: "chunk", Timeout: "5s"},
+			{ID: "persist", Action: "persist", DependsOn: []string{"chunk"}, Timeout: "30s"},
+		},
+	}
+	if err := def.Validate(); err != nil {
+		panic("knowledge.NewContentService: " + err.Error())
+	}
+	return &ContentService{repo: repo, definition: def}
 }
 
 // WithCacheVersioner 让正文替换递增搜索缓存版本。
@@ -58,9 +70,6 @@ func (s *ContentService) ReplaceDocumentContent(
 	if strings.TrimSpace(content) == "" {
 		return apperr.Wrap(ErrContentEmpty, apperr.CodeInvalidArgument, "正文不能为空")
 	}
-
-	// len(string) 是 UTF-8 字节数，正好对应 MaxDocumentContentBytes 的定义。
-	// 用 > 而不是 >=：上限本身是允许的，只有“超过”才拒绝。
 	if len(content) > MaxDocumentContentBytes {
 		return apperr.Wrap(
 			ErrContentTooLarge,
@@ -69,31 +78,63 @@ func (s *ContentService) ReplaceDocumentContent(
 		)
 	}
 
-	chunks, err := ChunkContent(content)
-	if err != nil {
-		return wrapContentChunkError(err)
-	}
-
-	// hash 必须和最终存进去的 content 完全一致：
-	// 这里先算整篇正文的 SHA-256，chunks 只是它的派生数据。
 	hash := sha256.Sum256([]byte(content))
-
-	if err := s.repo.ReplaceDocumentContent(ctx, documentID, content, hash, chunks); err != nil {
-		return wrapContentRepoError("替换文档正文失败", err)
+	actions := map[string]workflow.Action{
+		"chunk": func(ctx context.Context, _ map[string]any, _ map[string]any) (map[string]any, error) {
+			chunks, err := ChunkContent(content)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", errContentChunkStage, err)
+			}
+			return map[string]any{"chunks": chunks}, nil
+		},
+		"persist": func(ctx context.Context, vars map[string]any, _ map[string]any) (map[string]any, error) {
+			chunks, ok := vars["chunk"].(map[string]any)["chunks"].([]ContentChunk)
+			if !ok {
+				return nil, fmt.Errorf("%w: chunks 类型错误", errContentPersistStage)
+			}
+			if err := s.repo.ReplaceDocumentContent(ctx, documentID, content, hash, chunks); err != nil {
+				return nil, fmt.Errorf("%w: %w", errContentPersistStage, err)
+			}
+			bumpSearchCache(ctx, s.versioner)
+			return map[string]any{"chunks": len(chunks)}, nil
+		},
 	}
-	bumpSearchCache(ctx, s.versioner)
+
+	engine, err := workflow.NewEngine(s.definition, actions, workflow.NewMemoryStore(), nil)
+	if err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "初始化正文流水线失败")
+	}
+	runID, err := uuid.NewV7()
+	if err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "生成正文流水线 id 失败")
+	}
+	if _, err := engine.Execute(ctx, runID, map[string]any{
+		"document_id":  documentID,
+		"content":      content,
+		"content_hash": hash,
+	}); err != nil {
+		switch {
+		case errors.Is(err, errContentChunkStage):
+			return wrapContentChunkError(err)
+		case errors.Is(err, errContentPersistStage):
+			return wrapContentRepoError("替换文档正文失败", err)
+		default:
+			return apperr.Wrap(err, apperr.CodeInternal, "正文流水线失败")
+		}
+	}
 	return nil
 }
 
+var (
+	errContentChunkStage   = errors.New("content: chunk stage")
+	errContentPersistStage = errors.New("content: persist stage")
+)
+
 // wrapContentChunkError 把分块错误翻译成业务错误。
-//
-// ErrContentEmpty / ErrTooManyChunks 是用户输入问题，映射 400；
-// 其他错误说明分块实现出了故障，映射 500，真实原因保留在 Cause 里。
 func wrapContentChunkError(err error) error {
 	if err == nil {
 		return nil
 	}
-
 	switch {
 	case errors.Is(err, ErrContentEmpty):
 		return apperr.Wrap(err, apperr.CodeInvalidArgument, "正文不能为空")
@@ -109,14 +150,10 @@ func wrapContentChunkError(err error) error {
 }
 
 // wrapContentRepoError 把 repository 错误翻译成业务错误。
-//
-// ErrNotFound 映射 404；其他错误映射 500。
-// action 是面向用户的泛化说明，真实原因保留在 Cause 里，只进日志不出接口。
 func wrapContentRepoError(action string, err error) error {
 	if err == nil {
 		return nil
 	}
-
 	if errors.Is(err, ErrNotFound) {
 		return apperr.Wrap(err, apperr.CodeNotFound, "文档不存在")
 	}

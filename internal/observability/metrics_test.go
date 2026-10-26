@@ -28,6 +28,28 @@ func TestMetricsPrometheus(t *testing.T) {
 	}
 }
 
+func TestMetricsLLMStats(t *testing.T) {
+	m := NewMetrics()
+	m.SetLLMStats(func() map[string]LLMStat {
+		return map[string]LLMStat{"primary": {Requests: 3, Errors: 1, PromptTokens: 10, CompletionTokens: 5}}
+	})
+	var buf bytes.Buffer
+	if err := m.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`llm_requests_total{provider="primary"} 3`,
+		`llm_errors_total{provider="primary"} 1`,
+		`llm_tokens_total{provider="primary",kind="prompt"} 10`,
+		`llm_tokens_total{provider="primary",kind="completion"} 5`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺少 %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestMetricsNil(t *testing.T) {
 	var m *Metrics
 	m.Observe("GET", "/", 200)

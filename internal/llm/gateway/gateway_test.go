@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huakaifugui114514/working/internal/agent"
 )
@@ -117,3 +118,63 @@ func TestNewValidation(t *testing.T) {
 }
 
 var _ = strings.Contains
+
+type fakeSemantic struct {
+	answer string
+	hit    bool
+	put    string
+}
+
+func (f *fakeSemantic) Get(context.Context, string) (string, bool) { return f.answer, f.hit }
+func (f *fakeSemantic) Put(_ context.Context, _ string, answer string) error {
+	f.put = answer
+	return nil
+}
+
+func TestGatewaySemanticCache(t *testing.T) {
+	cache := &fakeSemantic{answer: "cached", hit: true}
+	g, err := NewWithOptions([]Provider{{Name: "p", Client: &fakeLLM{text: "real"}}}, Options{Cache: cache})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	resp, err := g.Chat(context.Background(), agent.ChatRequest{Messages: []agent.ChatMessage{{Role: "user", Content: "q"}}})
+	if err != nil || resp.Content != "cached" {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+
+	cache.hit = false
+	cache.answer = ""
+	resp, err = g.Chat(context.Background(), agent.ChatRequest{Messages: []agent.ChatMessage{{Role: "user", Content: "q2"}}})
+	if err != nil || resp.Content != "real" || cache.put != "real" {
+		t.Fatalf("resp=%+v err=%v put=%q", resp, err, cache.put)
+	}
+}
+
+func TestGatewayQuota(t *testing.T) {
+	g, err := NewWithOptions([]Provider{{Name: "p", Client: &fakeLLM{text: "ok"}}}, Options{
+		Quota: NewQuota(1, 0),
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	if _, err := g.Chat(context.Background(), agent.ChatRequest{}); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if _, err := g.Chat(context.Background(), agent.ChatRequest{}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("second err = %v", err)
+	}
+}
+
+func TestQuotaTokens(t *testing.T) {
+	q := NewQuota(0, 10)
+	now := time.Now().UTC()
+	if err := q.AddTokens(now, 5); err != nil {
+		t.Fatalf("AddTokens: %v", err)
+	}
+	if err := q.AddTokens(now, 6); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	if NewQuota(0, 0) != nil {
+		t.Fatal("0 配额应返回 nil")
+	}
+}

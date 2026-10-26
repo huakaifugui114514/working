@@ -11,10 +11,12 @@ import (
 
 // RedisOptions 是 Redis 连接配置。
 type RedisOptions struct {
-	Addr     string
-	Password string
-	DB       int
-	Timeout  time.Duration
+	Addr          string
+	SentinelAddrs []string
+	MasterName    string
+	Password      string
+	DB            int
+	Timeout       time.Duration
 }
 
 // Redis 是 go-redis 实现。
@@ -24,8 +26,11 @@ type Redis struct {
 
 // NewRedis 校验配置并构造客户端（不主动 Ping）。
 func NewRedis(opts RedisOptions) (*Redis, error) {
-	if opts.Addr == "" {
-		return nil, fmt.Errorf("cache: addr 不能为空")
+	if opts.Addr == "" && len(opts.SentinelAddrs) == 0 {
+		return nil, fmt.Errorf("cache: addr 或 sentinel_addrs 必须配置")
+	}
+	if len(opts.SentinelAddrs) > 0 && opts.MasterName == "" {
+		return nil, fmt.Errorf("cache: 使用 sentinel 时 master_name 不能为空")
 	}
 	if opts.Timeout <= 0 {
 		return nil, fmt.Errorf("cache: timeout 必须为正数")
@@ -33,14 +38,28 @@ func NewRedis(opts RedisOptions) (*Redis, error) {
 	if opts.DB < 0 {
 		return nil, fmt.Errorf("cache: db 不能为负数")
 	}
-	return &Redis{client: redis.NewClient(&redis.Options{
-		Addr:         opts.Addr,
-		Password:     opts.Password,
-		DB:           opts.DB,
-		DialTimeout:  opts.Timeout,
-		ReadTimeout:  opts.Timeout,
-		WriteTimeout: opts.Timeout,
-	})}, nil
+	var client *redis.Client
+	if len(opts.SentinelAddrs) > 0 {
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    opts.MasterName,
+			SentinelAddrs: opts.SentinelAddrs,
+			Password:      opts.Password,
+			DB:            opts.DB,
+			DialTimeout:   opts.Timeout,
+			ReadTimeout:   opts.Timeout,
+			WriteTimeout:  opts.Timeout,
+		})
+	} else {
+		client = redis.NewClient(&redis.Options{
+			Addr:         opts.Addr,
+			Password:     opts.Password,
+			DB:           opts.DB,
+			DialTimeout:  opts.Timeout,
+			ReadTimeout:  opts.Timeout,
+			WriteTimeout: opts.Timeout,
+		})
+	}
+	return &Redis{client: client}, nil
 }
 
 func (r *Redis) Get(ctx context.Context, key string) ([]byte, error) {

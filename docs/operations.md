@@ -63,6 +63,17 @@ docker compose -f deploy/docker-compose.prod.yml exec redis redis-cli --scan --p
 - 写操作会 `INCR search:version`，旧 key 靠 TTL 自然过期。
 - 不要用 `KEYS *` / `FLUSHALL` 做日常操作。
 
+## 2.2.1 Redis 故障切换
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml exec sentinel-1 \
+  redis-cli -p 26379 sentinel get-master-addr-by-name knowflow-master
+
+# 演练：停掉当前 master，等 Sentinel 提升 replica
+docker stop knowflow-redis-master-1
+# 再查 master 地址；应用使用 FailoverClient 自动重连
+```
+
 ## 2.3 Kafka 事件
 
 ```bash
@@ -100,6 +111,15 @@ FROM workflow_node_runs WHERE run_id = ? ORDER BY node_id;
 
 - `succeeded` 节点在 resume 时跳过；`failed` 节点重跑。
 - 同一 run 的节点状态是断点续跑的依据。
+
+## 2.5 LLM 统计
+
+```bash
+curl -H "Authorization: Bearer $KF_AUTH_API_KEY" http://127.0.0.1:8080/metrics \
+  | grep -E 'llm_requests|llm_errors|llm_tokens'
+```
+
+配额/语义缓存在进程内；多副本不共享，生产建议在入口层再加限流。
 
 ## 3. 常用 SQL
 

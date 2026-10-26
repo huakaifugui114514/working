@@ -38,6 +38,8 @@ kafka:
 
 redis:
   addr: "" # 空 = 关闭缓存；本地/生产设为 redis:6379
+  sentinel_addrs: "" # 生产 HA：sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+  master_name: "" # sentinel 模式必填，例如 knowflow-master
   db: 0
   timeout: 2s
   search_ttl: 30s
@@ -51,6 +53,12 @@ llm:
   max_tokens: 1024
   fallback_base_url: "" # 可选：主 provider 失败时切到备用
   fallback_model: ""
+  requests_per_minute: 0 # 0 = 不限
+  tokens_per_day: 0 # 0 = 不限
+  semantic_cache: false
+  semantic_threshold: 0.92
+  semantic_max_entries: 1000
+  semantic_ttl: 1h
 
 embedding:
   ollama_url: "http://127.0.0.1:11434"

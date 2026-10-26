@@ -31,7 +31,7 @@ func NewKafkaPublisher(brokers []string, topic string, timeout time.Duration) (*
 		Addr:         kafka.TCP(brokers...),
 		Topic:        topic,
 		Balancer:     &kafka.Hash{},
-		RequiredAcks: kafka.RequireOne,
+		RequiredAcks: kafka.RequireAll,
 		Async:        false,
 		BatchTimeout: 10 * time.Millisecond,
 		WriteTimeout: timeout,

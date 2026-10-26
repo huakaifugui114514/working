@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/huakaifugui114514/working/internal/agent"
 )
@@ -62,14 +63,34 @@ func (s *Stats) Snapshot() map[string]ProviderStats {
 }
 
 // Gateway 实现 agent.LLMClient 和 agent.StreamingLLMClient。
+// SemanticCache 是可选语义缓存。
+type SemanticCache interface {
+	Get(ctx context.Context, query string) (string, bool)
+	Put(ctx context.Context, query, answer string) error
+}
+
+// Options 是网关的可选能力。
+type Options struct {
+	Logger *slog.Logger
+	Quota  *Quota
+	Cache  SemanticCache
+}
+
 type Gateway struct {
 	providers []Provider
 	stats     *Stats
 	logger    *slog.Logger
+	quota     *Quota
+	cache     SemanticCache
 }
 
 // New 创建网关；provider 顺序就是降级顺序。
 func New(providers []Provider, logger *slog.Logger) (*Gateway, error) {
+	return NewWithOptions(providers, Options{Logger: logger})
+}
+
+// NewWithOptions 创建带配额/语义缓存的网关。
+func NewWithOptions(providers []Provider, opts Options) (*Gateway, error) {
 	if len(providers) == 0 {
 		return nil, errors.New("gateway: 至少一个 provider")
 	}
@@ -78,14 +99,23 @@ func New(providers []Provider, logger *slog.Logger) (*Gateway, error) {
 			return nil, errors.New("gateway: provider name/client 不能为空")
 		}
 	}
-	if logger == nil {
-		logger = slog.Default()
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
 	}
-	return &Gateway{providers: providers, stats: NewStats(), logger: logger}, nil
+	return &Gateway{providers: providers, stats: NewStats(), logger: opts.Logger, quota: opts.Quota, cache: opts.Cache}, nil
 }
 
 // Chat 按顺序尝试 provider，失败自动切下一个。
 func (g *Gateway) Chat(ctx context.Context, req agent.ChatRequest) (*agent.ChatResponse, error) {
+	query := lastUserMessage(req)
+	if query != "" && g.cache != nil {
+		if answer, ok := g.cache.Get(ctx, query); ok {
+			return &agent.ChatResponse{Content: answer}, nil
+		}
+	}
+	if err := g.quota.Allow(time.Now().UTC()); err != nil {
+		return nil, err
+	}
 	var errs []error
 	for _, p := range g.providers {
 		resp, err := p.Client.Chat(ctx, req)
@@ -93,6 +123,16 @@ func (g *Gateway) Chat(ctx context.Context, req agent.ChatRequest) (*agent.ChatR
 			g.stats.record(p.Name, resp.Usage, nil)
 			if p.Name != g.providers[0].Name {
 				g.logger.Warn("LLM 已降级到备用 provider", "provider", p.Name)
+			}
+			if g.quota != nil {
+				if err := g.quota.AddTokens(time.Now().UTC(), resp.Usage.PromptTokens+resp.Usage.CompletionTokens); err != nil {
+					g.logger.Warn("LLM token 配额超限", "error", err)
+				}
+			}
+			if query != "" && g.cache != nil {
+				if err := g.cache.Put(ctx, query, resp.Content); err != nil {
+					g.logger.Warn("LLM 语义缓存写入失败", "error", err)
+				}
 			}
 			return resp, nil
 		}
@@ -105,6 +145,15 @@ func (g *Gateway) Chat(ctx context.Context, req agent.ChatRequest) (*agent.ChatR
 
 // ChatStream 优先尝试支持流式的 provider；成功后返回其 stream。
 func (g *Gateway) ChatStream(ctx context.Context, req agent.ChatRequest) (agent.ChatStream, error) {
+	query := lastUserMessage(req)
+	if query != "" && g.cache != nil {
+		if answer, ok := g.cache.Get(ctx, query); ok {
+			return &cachedStream{answer: answer}, nil
+		}
+	}
+	if err := g.quota.Allow(time.Now().UTC()); err != nil {
+		return nil, err
+	}
 	var errs []error
 	for _, p := range g.providers {
 		streamer, ok := p.Client.(agent.StreamingLLMClient)
@@ -126,6 +175,29 @@ func (g *Gateway) ChatStream(ctx context.Context, req agent.ChatRequest) (agent.
 	}
 	return nil, errors.Join(errs...)
 }
+
+func lastUserMessage(req agent.ChatRequest) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			return req.Messages[i].Content
+		}
+	}
+	return ""
+}
+
+type cachedStream struct {
+	answer string
+	sent   bool
+}
+
+func (c *cachedStream) Recv() (agent.StreamDelta, error) {
+	if !c.sent {
+		c.sent = true
+		return agent.StreamDelta{Content: c.answer}, nil
+	}
+	return agent.StreamDelta{Done: true}, nil
+}
+func (c *cachedStream) Close() error { return nil }
 
 // Stats 返回累计统计。
 func (g *Gateway) Stats() map[string]ProviderStats { return g.stats.Snapshot() }

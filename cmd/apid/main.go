@@ -19,6 +19,7 @@ import (
 	"github.com/huakaifugui114514/working/internal/embedding"
 	"github.com/huakaifugui114514/working/internal/knowledge"
 	"github.com/huakaifugui114514/working/internal/llm/gateway"
+	"github.com/huakaifugui114514/working/internal/llm/semanticcache"
 	"github.com/huakaifugui114514/working/internal/observability"
 	"github.com/huakaifugui114514/working/internal/qdrant"
 	"github.com/huakaifugui114514/working/internal/transport/rest"
@@ -82,12 +83,14 @@ func run() error {
 
 	// Redis 是可选加速层：Redis 不可用不能阻塞服务启动，也不能让读请求变慢。
 	// 只有 Ping 成功才把 cache 注入 service；失败就完全退化为查 MySQL。
-	if cfg.Redis.Addr != "" {
+	if cfg.Redis.Enabled() {
 		redisCache, err := cache.NewRedis(cache.RedisOptions{
-			Addr:     cfg.Redis.Addr,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
-			Timeout:  cfg.Redis.Timeout,
+			Addr:          cfg.Redis.Addr,
+			SentinelAddrs: cfg.Redis.SentinelList(),
+			MasterName:    cfg.Redis.MasterName,
+			Password:      cfg.Redis.Password,
+			DB:            cfg.Redis.DB,
+			Timeout:       cfg.Redis.Timeout,
 		})
 		if err != nil {
 			return fmt.Errorf("初始化 Redis 客户端失败: %w", err)
@@ -108,14 +111,15 @@ func run() error {
 			collectionService.WithCacheVersioner(redisCache)
 			documentService.WithCacheVersioner(redisCache)
 			contentService.WithCacheVersioner(redisCache)
-			logger.Info("搜索缓存已启用", "addr", cfg.Redis.Addr, "ttl", cfg.Redis.SearchTTL)
+			logger.Info("搜索缓存已启用", "addr", cfg.Redis.Addr, "sentinels", cfg.Redis.SentinelList(), "master", cfg.Redis.MasterName, "ttl", cfg.Redis.SearchTTL)
 		}
 	}
 
 	keywordRetriever := agent.NewKeywordRetriever(searchService)
 	var retriever agent.Retriever = keywordRetriever
-	if cfg.Retrieval.Mode != config.RetrievalFTS {
-		embedder, err := embedding.NewOllamaEmbedder(embedding.OllamaOptions{
+	var vectorEmbedder *embedding.OllamaEmbedder
+	if cfg.Retrieval.Mode != config.RetrievalFTS || cfg.LLM.SemanticCache {
+		vectorEmbedder, err = embedding.NewOllamaEmbedder(embedding.OllamaOptions{
 			BaseURL: cfg.Embedding.OllamaURL,
 			Model:   cfg.Embedding.Model,
 			Timeout: cfg.Embedding.Timeout,
@@ -123,6 +127,8 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("初始化 embedding 客户端失败: %w", err)
 		}
+	}
+	if cfg.Retrieval.Mode != config.RetrievalFTS {
 		vectorStore, err := qdrant.NewClient(qdrant.Options{
 			BaseURL:    cfg.Qdrant.URL,
 			Collection: cfg.Qdrant.Collection,
@@ -132,7 +138,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("初始化 Qdrant 客户端失败: %w", err)
 		}
-		vectorRetriever := agent.NewVectorRetriever(embedder, vectorStore, repo)
+		vectorRetriever := agent.NewVectorRetriever(vectorEmbedder, vectorStore, repo)
 		switch cfg.Retrieval.Mode {
 		case config.RetrievalVector:
 			retriever = vectorRetriever
@@ -174,7 +180,17 @@ func run() error {
 	if cfg.LLM.APIKey == "" {
 		logger.Warn("KF_LLM_API_KEY 未配置，/api/v1/agent/chat 会返回 500")
 	}
-	llmGateway, err := gateway.New(providers, logger)
+	var semantic gateway.SemanticCache
+	if cfg.LLM.SemanticCache {
+		sc, err := semanticcache.New(vectorEmbedder, cfg.LLM.SemanticThreshold, cfg.LLM.SemanticTTL, cfg.LLM.SemanticMaxEntries)
+		if err != nil {
+			return fmt.Errorf("初始化语义缓存失败: %w", err)
+		}
+		semantic = sc
+		logger.Info("LLM 语义缓存已启用", "threshold", cfg.LLM.SemanticThreshold, "max_entries", cfg.LLM.SemanticMaxEntries)
+	}
+	quota := gateway.NewQuota(cfg.LLM.RequestsPerMinute, cfg.LLM.TokensPerDay)
+	llmGateway, err := gateway.NewWithOptions(providers, gateway.Options{Logger: logger, Quota: quota, Cache: semantic})
 	if err != nil {
 		return fmt.Errorf("初始化 LLM gateway 失败: %w", err)
 	}
@@ -191,6 +207,16 @@ func run() error {
 	svc := rest.New(*cfg, logger, version.Get(),
 		collectionService, documentService, contentService, searchService, agentService)
 	svc.SetReadiness(db)
+	svc.SetLLMStats(func() map[string]observability.LLMStat {
+		out := make(map[string]observability.LLMStat)
+		for name, st := range llmGateway.Stats() {
+			out[name] = observability.LLMStat{
+				Requests: st.Requests, Errors: st.Errors,
+				PromptTokens: st.PromptTokens, CompletionTokens: st.CompletionTokens,
+			}
+		}
+		return out
+	})
 
 	// 6. 信号 ctx：Ctrl+C 是 SIGINT，而 k8s / docker stop 发的是 SIGTERM。
 	//    只监听 SIGINT，线上就会被 SIGKILL 硬杀，优雅退出白写。
