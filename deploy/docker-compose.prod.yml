@@ -1,0 +1,149 @@
+# KnowFlow 生产部署编排。
+#
+# 与 docker-compose.yml 的区别：
+#   - 只暴露 API 端口；MySQL/Qdrant 不出宿主机
+#   - 迁移作为一次性 job，API/worker 等它成功后再启动
+#   - API 使用非 root 镜像、API key 鉴权、/readyz 健康检查
+#   - embedding 服务不放在本编排里：生产应指向 GPU/云 embedding 网关
+#
+# 用法：
+#   cp deploy/env.prod.example deploy/.env
+#   ${EDITOR:-vi} deploy/.env
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
+#
+# 注意：.env 已被 gitignore；不要把真实密钥写进这个模板。
+
+name: knowflow
+
+x-app-env: &app-env
+  KF_CONFIG_FILE: /etc/knowflow/config.yaml
+  KF_APP_ENV: prod
+  KF_DATABASE_HOST: mysql
+  KF_DATABASE_PORT: "3306"
+  KF_DATABASE_NAME: ${MYSQL_DATABASE:?请在 deploy/.env 设置 MYSQL_DATABASE}
+  KF_DATABASE_USER: ${MYSQL_USER:?请在 deploy/.env 设置 MYSQL_USER}
+  KF_DATABASE_PASSWORD: ${MYSQL_PASSWORD:?请在 deploy/.env 设置 MYSQL_PASSWORD}
+  KF_AUTH_API_KEY: ${KF_AUTH_API_KEY:?请在 deploy/.env 设置 KF_AUTH_API_KEY}
+  KF_LLM_BASE_URL: ${KF_LLM_BASE_URL:-https://api.deepseek.com}
+  KF_LLM_MODEL: ${KF_LLM_MODEL:-deepseek-chat}
+  KF_LLM_API_KEY: ${KF_LLM_API_KEY:?请在 deploy/.env 设置 KF_LLM_API_KEY}
+  KF_LLM_TIMEOUT: ${KF_LLM_TIMEOUT:-60s}
+  KF_EMBEDDING_OLLAMA_URL: ${KF_EMBEDDING_OLLAMA_URL:-http://host.docker.internal:11434}
+  KF_EMBEDDING_MODEL: ${KF_EMBEDDING_MODEL:-bge-m3}
+  KF_EMBEDDING_TIMEOUT: ${KF_EMBEDDING_TIMEOUT:-120s}
+  KF_EMBEDDING_BATCH_SIZE: ${KF_EMBEDDING_BATCH_SIZE:-16}
+  KF_QDRANT_URL: http://qdrant:6333
+  KF_QDRANT_COLLECTION: document_chunks
+  KF_QDRANT_VECTOR_SIZE: "1024"
+  KF_RETRIEVAL_MODE: ${KF_RETRIEVAL_MODE:-hybrid}
+  KF_LOG_LEVEL: ${KF_LOG_LEVEL:-info}
+  KF_LOG_FORMAT: ${KF_LOG_FORMAT:-json}
+
+x-build: &knowflow-build
+  context: ..
+  dockerfile: Dockerfile
+  args:
+    GO_IMAGE: ${GO_IMAGE:-golang:1.27.2-alpine}
+    RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.22}
+    GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 deploy/.env 设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?}
+      MYSQL_USER: ${MYSQL_USER:?}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?}
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+      - --slow-query-log=1
+      - --long-query-time=0.5
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysql -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD -D$$MYSQL_DATABASE -e 'SELECT 1' >/dev/null 2>&1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 40s
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  migrate:
+    image: knowflow:${KF_IMAGE_TAG:-prod}
+    build: *knowflow-build
+    entrypoint: ["/usr/local/bin/migrate"]
+    command: ["up"]
+    environment: *app-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  apid:
+    image: knowflow:${KF_IMAGE_TAG:-prod}
+    build: *knowflow-build
+    restart: unless-stopped
+    environment: *app-env
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  embed:
+    image: knowflow:${KF_IMAGE_TAG:-prod}
+    build: *knowflow-build
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/embed"]
+    command: ["-interval", "30s"]
+    environment: *app-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  vector-clean:
+    image: knowflow:${KF_IMAGE_TAG:-prod}
+    build: *knowflow-build
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/vector-clean"]
+    command: ["-interval", "30s"]
+    environment: *app-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+
+volumes:
+  mysql-data:
+  qdrant-data:

@@ -606,6 +606,59 @@ purge 完成 associations=1 contents=1 chunks=1 jobs=1 documents=1
 
 清理失败不会回滚已完成的 DB 删除；任务保留在 `vector_cleanup_jobs`，可重试/对账。
 
+## 生产部署
+
+生产部署、鉴权、TLS、迁移、worker、备份、扩缩容和故障处理见：
+
+- [`docs/deployment.md`](docs/deployment.md)
+- [`docs/operations.md`](docs/operations.md)
+
+最短路径：
+
+```bash
+cp deploy/env.prod.example deploy/.env
+chmod 600 deploy/.env
+# 填 MYSQL_*、KF_AUTH_API_KEY、KF_LLM_API_KEY、KF_EMBEDDING_OLLAMA_URL
+
+docker compose --env-file deploy/.env \
+  -f deploy/docker-compose.prod.yml up -d --build
+
+curl -fsS http://127.0.0.1:8080/readyz
+curl -H "Authorization: Bearer $KF_AUTH_API_KEY" \
+  http://127.0.0.1:8080/api/v1/collections
+```
+
+生产镜像：
+
+```bash
+make docker-build
+# 或
+docker build -t knowflow:prod .
+```
+
+安全默认值：
+
+- 运行时非 root；
+- MySQL/Qdrant 不暴露宿主机端口；
+- `prod` 必须设置 `KF_AUTH_API_KEY`；
+- `/healthz`、`/readyz` 不鉴权，其余 API 需要 API key；
+- 安全响应头默认开启；
+- 镜像不包含 `.env` / 源码。
+
+CI：`.github/workflows/ci.yml`
+
+- gofmt / vet / golangci-lint
+- 单元测试 `-race`
+- MySQL + Qdrant 集成测试
+- 内部包覆盖率门槛 85%
+- Docker 镜像构建
+
+覆盖率：
+
+```bash
+make coverage
+```
+
 ## 目录结构
 
 ```
@@ -635,10 +688,13 @@ docs/        设计与决策记录（ADR / schema / 架构）
 ## 工程门禁
 
 ```bash
-make help     # 查看全部工程命令
-make check    # 提交前一键检查：gofmt + go vet + golangci-lint + go test -race
-make build    # 编译到 bin/apid（版本号由 git + ldflags 注入）
-make run      # 本地运行（go run，版本号为 dev；需要先启动 MySQL 并配好 KF_DATABASE_*）
+make help              # 查看全部工程命令
+make check             # 提交前一键检查：gofmt + go vet + golangci-lint + go test -race
+make test-integration  # 集成测试（需要 MySQL/Qdrant）
+make coverage          # 内部包覆盖率（门槛 85%）
+make docker-build      # 生产镜像
+make build             # 编译到 bin/apid（版本号由 git + ldflags 注入）
+make run               # 本地运行（go run，版本号为 dev；需要先启动 MySQL 并配好 KF_DATABASE_*）
 ```
 
 `make check` 全绿是提交的前提，当前状态：

@@ -84,18 +84,7 @@ func (c *Client) EnsureCollection(ctx context.Context) error {
 		return err
 	}
 	if status == http.StatusOK {
-		var info collectionInfo
-		if err := json.Unmarshal(raw, &info); err != nil {
-			return fmt.Errorf("qdrant: 解析 collection 信息失败: %w", err)
-		}
-		got := info.Result.Config.Params.Vectors
-		if got.Size != c.vectorSize {
-			return fmt.Errorf("qdrant: collection %q 维度=%d, want %d", c.collection, got.Size, c.vectorSize)
-		}
-		if !strings.EqualFold(got.Distance, "Cosine") {
-			return fmt.Errorf("qdrant: collection %q distance=%q, want Cosine", c.collection, got.Distance)
-		}
-		return nil
+		return c.validateCollection(raw)
 	}
 	if status != http.StatusNotFound {
 		return fmt.Errorf("qdrant: 查询 collection status=%d body=%s", status, strings.TrimSpace(string(raw)))
@@ -111,8 +100,35 @@ func (c *Client) EnsureCollection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if status == http.StatusConflict {
+		// 两个 worker 同时 EnsureCollection 时，一个会拿到 409。
+		// 重新 GET 并校验配置，把“并发创建”当成幂等成功。
+		raw, status, err = c.do(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("qdrant: collection 已存在但查询失败 status=%d body=%s", status, strings.TrimSpace(string(raw)))
+		}
+		return c.validateCollection(raw)
+	}
 	if status < 200 || status >= 300 {
 		return fmt.Errorf("qdrant: 创建 collection status=%d body=%s", status, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
+func (c *Client) validateCollection(raw []byte) error {
+	var info collectionInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return fmt.Errorf("qdrant: 解析 collection 信息失败: %w", err)
+	}
+	got := info.Result.Config.Params.Vectors
+	if got.Size != c.vectorSize {
+		return fmt.Errorf("qdrant: collection %q 维度=%d, want %d", c.collection, got.Size, c.vectorSize)
+	}
+	if !strings.EqualFold(got.Distance, "Cosine") {
+		return fmt.Errorf("qdrant: collection %q distance=%q, want Cosine", c.collection, got.Distance)
 	}
 	return nil
 }

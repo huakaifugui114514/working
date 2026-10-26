@@ -59,6 +59,23 @@ lint: ## 静态检查（golangci-lint，配置见 .golangci.yml）
 test: ## 跑全部测试（带竞态检测）
 	@go test -race -count=1 ./...
 
+.PHONY: test-integration
+test-integration: ## 跑集成测试（需要 MySQL/Qdrant；Ollama 测试可选）
+	@go test -race -tags=integration -count=1 ./...
+
+.PHONY: coverage
+coverage: ## 生成内部包覆盖率并检查 ≥85%（需要 MySQL/Qdrant）
+	@go test -tags=integration -coverpkg=./internal/... -coverprofile=coverage.out ./internal/... ./migrations
+	@total=$$(go tool cover -func=coverage.out | tail -1 | awk '{print $$3}' | tr -d '%'); 	echo "内部包总覆盖率: $$total%"; 	awk -v total="$$total" 'BEGIN { if (total < 85) { print "覆盖率低于 85%"; exit 1 } }'
+
+.PHONY: docker-build
+docker-build: ## 构建生产镜像（可用 GO_IMAGE/RUNTIME_IMAGE 覆盖基础镜像）
+	@docker build -t knowflow:local \
+		--build-arg GO_IMAGE="$${GO_IMAGE:-golang:1.27.2-alpine}" \
+		--build-arg RUNTIME_IMAGE="$${RUNTIME_IMAGE:-alpine:3.22}" \
+		--build-arg GOPROXY="$${GOPROXY:-https://proxy.golang.org,direct}" \
+		.
+
 .PHONY: build
 build: ## 编译到 bin/apid（版本号由 ldflags 注入）
 	@mkdir -p $(BIN_DIR)

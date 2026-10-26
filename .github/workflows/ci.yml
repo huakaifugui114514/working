@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: 质量门禁（单元）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go mod download
+        run: go mod download
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: 安装 golangci-lint
+        run: GOBIN="$(go env GOPATH)/bin" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+
+      - name: golangci-lint
+        run: '"$(go env GOPATH)/bin/golangci-lint" run ./...'
+
+      - name: 单元测试（race）
+        run: go test -race -count=1 ./...
+
+      - name: 编译全部命令
+        run: go build ./...
+
+  integration:
+    name: 集成测试 + 覆盖率
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root-pass
+          MYSQL_DATABASE: knowflow
+          MYSQL_USER: knowflow
+          MYSQL_PASSWORD: test-pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uknowflow -ptest-pass"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+      qdrant:
+        image: qdrant/qdrant:v1.12.4
+        ports:
+          - 6333:6333
+    env:
+      KF_DATABASE_HOST: 127.0.0.1
+      KF_DATABASE_PORT: "3306"
+      KF_DATABASE_NAME: knowflow
+      KF_DATABASE_USER: knowflow
+      KF_DATABASE_PASSWORD: test-pass
+      KF_QDRANT_URL: http://127.0.0.1:6333
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 等待 Qdrant
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:6333/healthz; then exit 0; fi
+            sleep 2
+          done
+          echo "Qdrant 未就绪" >&2
+          exit 1
+
+      - name: 集成测试（race，无 Ollama 时自动跳过真实 embedding）
+        run: go test -race -tags=integration -count=1 ./...
+
+      - name: 覆盖率（内部包，门槛 85%）
+        run: |
+          go test -tags=integration -coverpkg=./internal/... \
+            -coverprofile=coverage.out ./internal/... ./migrations
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "内部包总覆盖率: ${total}%"
+          awk -v total="$total" 'BEGIN { if (total < 85) { print "覆盖率低于 85%"; exit 1 } }'
+
+      - name: 上传覆盖率
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  docker:
+    name: Docker 镜像构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建生产镜像
+        run: docker build -t knowflow:ci .

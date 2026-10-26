@@ -210,3 +210,32 @@ func TestQdrantNon2xx(t *testing.T) {
 		t.Fatal("非 2xx 应返回错误")
 	}
 }
+
+func TestEnsureCollectionCreateConflict(t *testing.T) {
+	getCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCalls++
+			if getCalls == 1 {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = fmt.Fprint(w, `{"status":{"error":"not found"}}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"result":{"config":{"params":{"vectors":{"size":4,"distance":"Cosine"}}}}}`)
+		case http.MethodPut:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprint(w, `{"status":{"error":"already exists"}}`)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	if err := newTestClient(t, server).EnsureCollection(context.Background()); err != nil {
+		t.Fatalf("EnsureCollection: %v", err)
+	}
+	if getCalls != 2 {
+		t.Fatalf("GET 次数 = %d, want 2", getCalls)
+	}
+}

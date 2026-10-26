@@ -290,7 +290,9 @@
   Agent 接入；FTS 无结果、Hybrid 补回正确 citation 的真实 E2E 通过
 - ✅ M4.4d `0005_vector_cleanup_jobs` + `cmd/vector-clean`：purge 后异步删除 Qdrant 向量，
   pending→done、points 1→0 真实 E2E 通过
-- ⬜ 下一步：M4.5 生产 embedding provider / rerank / 全量 Hybrid 评测 / 灰度与运维文档
+- ✅ 生产化基线：API key 鉴权、`/readyz`、安全响应头、Dockerfile、生产 Compose、
+  GitHub Actions、集成覆盖率 85% 门槛、部署/运维手册
+- ⬜ 下一步：M4.5 生产 embedding provider / rerank / 全量 Hybrid 评测 / 指标与限流
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -313,6 +315,8 @@ make embed-eval                     # 纯向量评测（需要 Ollama + bge-m3�
 make embed-once                     # 跑一次 embedding worker（需要 Ollama + Qdrant）
 make vector-clean-once              # 跑一次 Qdrant 清理 worker（需要 Qdrant）
 KF_RETRIEVAL_MODE=hybrid make run   # 用 Hybrid 检索（默认 fts）
+make coverage                       # 内部包覆盖率（门槛 85%，需要 MySQL/Qdrant）
+make docker-build                   # 生产镜像
 ```
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
@@ -341,7 +345,8 @@ KF_RETRIEVAL_MODE=hybrid make run   # 用 Hybrid 检索（默认 fts）
    ✅ M4.4b embedding worker 完成：0004 outbox + `cmd/embed` + Qdrant 写入/删除。
    ✅ M4.4c Vector/Hybrid 检索完成：RRF、检索模式开关、Agent 接入、真实 E2E。
    ✅ M4.4d Qdrant 清理完成：0005 outbox + `cmd/vector-clean`。
-   ⬜ **下一步**：M4.5 生产 embedding provider、rerank、全量 Hybrid 评测、灰度与运维文档。
+   ✅ 生产化基线完成：鉴权、就绪探针、安全头、Docker/Compose、CI、覆盖率、部署/运维文档。
+   ⬜ **下一步**：M4.5 生产 embedding provider、rerank、全量 Hybrid 评测、指标/限流。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备
