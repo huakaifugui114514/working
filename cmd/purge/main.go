@@ -86,6 +86,9 @@ func run() error {
 
 	logger.Info("purge 统计",
 		"associations", stats.Associations,
+		"contents", stats.Contents,
+		"chunks", stats.Chunks,
+		"jobs", stats.Jobs,
 		"documents", stats.Documents,
 		"collections", stats.Collections,
 		"batches", stats.Batches,

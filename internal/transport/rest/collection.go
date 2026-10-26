@@ -220,7 +220,15 @@ func parseListLimit(raw string, defaultLimit, maxLimit int) (int, error) {
 
 // decodeJSONBody 只接受一个 JSON 对象，拒绝未知字段和 trailing JSON。
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	return decodeJSONBodyWithLimit(w, r, dst, maxRequestBytes)
+}
+
+// decodeJSONBodyWithLimit 是 decodeJSONBody 的可变上限版本。
+//
+// 正文接口的 content 本身允许 1 MiB，JSON 包装后请求体会超过 1 MiB，
+// 所以它需要单独用 2 MiB 上限；其他接口继续用 1 MiB。
+func decodeJSONBodyWithLimit(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

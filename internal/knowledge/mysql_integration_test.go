@@ -27,7 +27,8 @@ import (
 //		go test -tags=integration -count=1 -v ./internal/knowledge/
 //
 // 每个测试用一条固定连接，在会话里建同名 TEMPORARY TABLE collections / documents /
-// collection_documents。临时表会遮蔽真实表，测试结束连接关闭后自动消失，不会碰真实数据。
+// collection_documents / document_contents / document_chunks。临时表会遮蔽真实表，
+// 测试结束连接关闭后自动消失，不会碰真实数据。
 const createTempCollectionsTable = `
 CREATE TEMPORARY TABLE collections (
     id          BINARY(16)    NOT NULL,
@@ -70,6 +71,55 @@ CREATE TEMPORARY TABLE collection_documents (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_0900_ai_ci`
 
+// 临时表不能建 FULLTEXT 索引（MySQL 8 会报 1796），所以这里只保留
+// repository 用到的列和唯一键；FULLTEXT 属于检索路径，不在这组测试里。
+const createTempDocumentContentsTable = `
+CREATE TEMPORARY TABLE document_contents (
+    document_id     BINARY(16)    NOT NULL,
+    content         LONGTEXT      NOT NULL,
+    content_hash    BINARY(32)    NOT NULL,
+    chunker_version INT UNSIGNED  NOT NULL,
+    created_at      DATETIME(3)   NOT NULL,
+    updated_at      DATETIME(3)   NOT NULL,
+    PRIMARY KEY (document_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci`
+
+const createTempDocumentChunksTable = `
+CREATE TEMPORARY TABLE document_chunks (
+    id          BINARY(16)    NOT NULL,
+    document_id BINARY(16)    NOT NULL,
+    chunk_index INT UNSIGNED  NOT NULL,
+    content     TEXT          NOT NULL,
+    char_count  INT UNSIGNED  NOT NULL,
+    created_at  DATETIME(3)   NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_document_chunk (document_id, chunk_index)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci`
+
+const createTempEmbeddingJobsTable = `
+CREATE TEMPORARY TABLE embedding_jobs (
+    document_id     BINARY(16)    NOT NULL,
+    content_hash    BINARY(32)    NOT NULL,
+    chunker_version INT UNSIGNED  NOT NULL,
+    status          VARCHAR(16)   NOT NULL,
+    attempts        INT UNSIGNED  NOT NULL DEFAULT 0,
+    available_at    DATETIME(3)   NOT NULL,
+    locked_at       DATETIME(3)   NULL,
+    locked_by       VARCHAR(128)  NULL,
+    last_error      VARCHAR(1024) NULL,
+    created_at      DATETIME(3)   NOT NULL,
+    updated_at      DATETIME(3)   NOT NULL,
+    PRIMARY KEY (document_id),
+    KEY idx_embedding_jobs_claim (status, available_at),
+    KEY idx_embedding_jobs_lease (status, locked_at)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci`
+
 func newIntegrationRepo(t *testing.T) (*MySQLRepository, *sql.Conn) {
 	t.Helper()
 
@@ -98,6 +148,15 @@ func newIntegrationRepo(t *testing.T) (*MySQLRepository, *sql.Conn) {
 	}
 	if _, err := conn.ExecContext(context.Background(), createTempCollectionDocumentsTable); err != nil {
 		t.Fatalf("创建临时 collection_documents 表失败: %v", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), createTempDocumentContentsTable); err != nil {
+		t.Fatalf("创建临时 document_contents 表失败: %v", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), createTempDocumentChunksTable); err != nil {
+		t.Fatalf("创建临时 document_chunks 表失败: %v", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), createTempEmbeddingJobsTable); err != nil {
+		t.Fatalf("创建临时 embedding_jobs 表失败: %v", err)
 	}
 	return &MySQLRepository{db: conn}, conn
 }

@@ -37,6 +37,9 @@ type Server struct {
 	info        version.Info
 	collections CollectionService
 	documents   DocumentService
+	contents    ContentService
+	searches    SearchService
+	agents      AgentService
 	startedAt   time.Time
 
 	// inFlight 正在处理的请求数；用 atomic 而不是 Mutex：只有一个计数器、无关联状态，
@@ -51,14 +54,32 @@ type Server struct {
 // New 组装一个可运行的 Server（不启动监听）。
 //
 // 构造与启动分离，是为了让测试可以直接拿 Handler() 跑 httptest —— 不占端口、不起网络。
-// collections / documents 由 main 注入；两者都是必需依赖，传 nil 说明装配代码有 bug，
-// 直接在启动期 panic，避免请求打进来才发现空指针。
-func New(cfg config.Config, logger *slog.Logger, info version.Info, collections CollectionService, documents DocumentService) *Server {
+// collections / documents / contents / searches / agents 由 main 注入；五者都是必需依赖，
+// 传 nil 说明装配代码有 bug，直接在启动期 panic，避免请求打进来才发现空指针。
+func New(
+	cfg config.Config,
+	logger *slog.Logger,
+	info version.Info,
+	collections CollectionService,
+	documents DocumentService,
+	contents ContentService,
+	searches SearchService,
+	agents AgentService,
+) *Server {
 	if collections == nil {
 		panic("rest.New: collections is nil")
 	}
 	if documents == nil {
 		panic("rest.New: documents is nil")
+	}
+	if contents == nil {
+		panic("rest.New: contents is nil")
+	}
+	if searches == nil {
+		panic("rest.New: searches is nil")
+	}
+	if agents == nil {
+		panic("rest.New: agents is nil")
 	}
 	s := &Server{
 		cfg:         cfg,
@@ -66,6 +87,9 @@ func New(cfg config.Config, logger *slog.Logger, info version.Info, collections 
 		info:        info,
 		collections: collections,
 		documents:   documents,
+		contents:    contents,
+		searches:    searches,
+		agents:      agents,
 		startedAt:   time.Now(),
 	}
 
@@ -120,10 +144,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PATCH "+documentsPath+"/{id}", s.handleUpdateDocument)
 	mux.HandleFunc("DELETE "+documentsPath+"/{id}", s.handleDeleteDocument)
 	mux.HandleFunc("POST "+documentsPath+"/{id}/restore", s.handleRestoreDocument)
+	mux.HandleFunc("PUT "+documentsPath+"/{id}/content", s.handleReplaceContent)
 
 	mux.HandleFunc("POST "+collectionsPath+"/{id}/documents", s.handleAddDocumentToCollection)
 	mux.HandleFunc("GET "+collectionsPath+"/{id}/documents", s.handleListDocumentsByCollection)
 	mux.HandleFunc("DELETE "+collectionsPath+"/{id}/documents/{document_id}", s.handleRemoveDocumentFromCollection)
+
+	mux.HandleFunc("GET "+searchPath, s.handleSearch)
+	mux.HandleFunc("POST "+agentChatPath, s.handleAgentChat)
 
 	// 调试路由只在 dev 注册：生产环境多一个入口就多一个攻击面
 	if s.cfg.App.Env == config.EnvDev {

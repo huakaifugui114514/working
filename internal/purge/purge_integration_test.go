@@ -4,6 +4,7 @@ package purge
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"io"
@@ -53,6 +54,61 @@ CREATE TEMPORARY TABLE collection_documents (
     PRIMARY KEY (collection_id, document_id),
     KEY idx_document (document_id),
     KEY idx_collection_created (collection_id, created_at, document_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+-- 临时表不能建 FULLTEXT 索引（MySQL 8 会报 1796）；
+-- purge 只按 document_id 删除，不需要全文索引。
+CREATE TEMPORARY TABLE document_contents (
+    document_id     BINARY(16)    NOT NULL,
+    content         LONGTEXT      NOT NULL,
+    content_hash    BINARY(32)    NOT NULL,
+    chunker_version INT UNSIGNED  NOT NULL,
+    created_at      DATETIME(3)   NOT NULL,
+    updated_at      DATETIME(3)   NOT NULL,
+    PRIMARY KEY (document_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+CREATE TEMPORARY TABLE document_chunks (
+    id          BINARY(16)    NOT NULL,
+    document_id BINARY(16)    NOT NULL,
+    chunk_index INT UNSIGNED  NOT NULL,
+    content     TEXT          NOT NULL,
+    char_count  INT UNSIGNED  NOT NULL,
+    created_at  DATETIME(3)   NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_document_chunk (document_id, chunk_index)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+CREATE TEMPORARY TABLE embedding_jobs (
+    document_id     BINARY(16)    NOT NULL,
+    content_hash    BINARY(32)    NOT NULL,
+    chunker_version INT UNSIGNED  NOT NULL,
+    status          VARCHAR(16)   NOT NULL,
+    attempts        INT UNSIGNED  NOT NULL DEFAULT 0,
+    available_at    DATETIME(3)   NOT NULL,
+    locked_at       DATETIME(3)       NULL,
+    locked_by       VARCHAR(128)      NULL,
+    last_error      VARCHAR(1024)     NULL,
+    created_at      DATETIME(3)   NOT NULL,
+    updated_at      DATETIME(3)   NOT NULL,
+    PRIMARY KEY (document_id),
+    KEY idx_embedding_jobs_claim (status, available_at),
+    KEY idx_embedding_jobs_lease (status, locked_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+CREATE TEMPORARY TABLE vector_cleanup_jobs (
+    document_id BINARY(16)    NOT NULL,
+    status      VARCHAR(16)   NOT NULL,
+    attempts    INT UNSIGNED  NOT NULL DEFAULT 0,
+    available_at DATETIME(3)  NOT NULL,
+    locked_at   DATETIME(3)       NULL,
+    locked_by   VARCHAR(128)      NULL,
+    last_error  VARCHAR(1024)     NULL,
+    created_at  DATETIME(3)   NOT NULL,
+    updated_at  DATETIME(3)   NOT NULL,
+    PRIMARY KEY (document_id),
+    KEY idx_vector_cleanup_claim (status, available_at),
+    KEY idx_vector_cleanup_lease (status, locked_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;`
 
 func openIntegrationDB(t *testing.T) *sql.DB {
@@ -138,6 +194,64 @@ func insertAssociation(t *testing.T, conn *sql.Conn, collectionID, documentID uu
 	if err != nil {
 		t.Fatalf("插入关联失败: %v", err)
 	}
+}
+
+func insertContent(t *testing.T, conn *sql.Conn, documentID uuid.UUID, content string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	hash := sha256.Sum256([]byte(content))
+	_, err := conn.ExecContext(context.Background(),
+		`INSERT INTO document_contents
+		 (document_id, content, content_hash, chunker_version, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		documentID[:], content, hash[:], knowledge.ContentChunkerVersion, now, now)
+	if err != nil {
+		t.Fatalf("插入 document_content 失败: %v", err)
+	}
+}
+
+func insertChunk(t *testing.T, conn *sql.Conn, documentID uuid.UUID, index int, content string) {
+	t.Helper()
+	id, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("生成 chunk id 失败: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	_, err = conn.ExecContext(context.Background(),
+		`INSERT INTO document_chunks (id, document_id, chunk_index, content, char_count, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id[:], documentID[:], index, content, len([]rune(content)), now)
+	if err != nil {
+		t.Fatalf("插入 document_chunk 失败: %v", err)
+	}
+}
+
+func insertJob(t *testing.T, conn *sql.Conn, documentID uuid.UUID, content string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	hash := sha256.Sum256([]byte(content))
+	_, err := conn.ExecContext(context.Background(),
+		`INSERT INTO embedding_jobs
+		 (document_id, content_hash, chunker_version, status, attempts,
+		  available_at, created_at, updated_at)
+		 VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)`,
+		documentID[:], hash[:], knowledge.ContentChunkerVersion, now, now, now)
+	if err != nil {
+		t.Fatalf("插入 embedding_job 失败: %v", err)
+	}
+}
+
+func countContentRows(t *testing.T, conn *sql.Conn, documentID uuid.UUID) (contents, chunks int) {
+	t.Helper()
+	if err := conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM document_contents WHERE document_id = ?`, documentID[:]).Scan(&contents); err != nil {
+		t.Fatalf("统计 document_contents 失败: %v", err)
+	}
+	if err := conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM document_chunks WHERE document_id = ?`, documentID[:]).Scan(&chunks); err != nil {
+		t.Fatalf("统计 document_chunks 失败: %v", err)
+	}
+	return contents, chunks
 }
 
 func countByID(t *testing.T, conn *sql.Conn, table string, id uuid.UUID) int {
@@ -314,6 +428,88 @@ func TestIntegrationPurge(t *testing.T) {
 //
 // 用 50 年保留期（cutoff 约 1976 年），把测试行伪装成 1970 年软删，
 // 避免碰到本地库里其他真实数据。测试行按精确 id 清理。
+func TestIntegrationPurgeDocumentContent(t *testing.T) {
+	conn := newIntegrationDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
+
+	old := time.Now().UTC().Add(-2 * DefaultRetention).Truncate(time.Millisecond)
+	expiredDoc := uuid.New()
+	activeDoc := uuid.New()
+
+	insertDocument(t, conn, expiredDoc, "expired-with-content", &old)
+	insertContent(t, conn, expiredDoc, "过期正文")
+	insertJob(t, conn, expiredDoc, "过期正文")
+	insertChunk(t, conn, expiredDoc, 0, "过期第一段")
+	insertChunk(t, conn, expiredDoc, 1, "过期第二段")
+
+	insertDocument(t, conn, activeDoc, "active-with-content", nil)
+	insertContent(t, conn, activeDoc, "活跃正文")
+	insertJob(t, conn, activeDoc, "活跃正文")
+	insertChunk(t, conn, activeDoc, 0, "活跃第一段")
+
+	runner := NewRunner(conn, logger)
+	opts := Options{Retention: DefaultRetention, BatchSize: 10, Interval: 0}
+
+	// dry-run：只统计过期 document 的 content/chunks，不删数据。
+	dry, err := runner.Run(ctx, Options{
+		Retention: opts.Retention,
+		BatchSize: opts.BatchSize,
+		Interval:  opts.Interval,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if dry.Documents != 1 || dry.Contents != 1 || dry.Chunks != 2 || dry.Jobs != 1 {
+		t.Fatalf("dry-run stats = %+v, want documents=1 contents=1 chunks=2 jobs=1", dry)
+	}
+	if contents, chunks := countContentRows(t, conn, expiredDoc); contents != 1 || chunks != 2 {
+		t.Fatalf("dry-run 不应删除数据: contents=%d chunks=%d", contents, chunks)
+	}
+
+	stats, err := runner.Run(ctx, opts)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if stats.Documents != 1 || stats.Contents != 1 || stats.Chunks != 2 || stats.Jobs != 1 {
+		t.Fatalf("stats = %+v, want documents=1 contents=1 chunks=2 jobs=1", stats)
+	}
+
+	if n := countByID(t, conn, "documents", expiredDoc); n != 0 {
+		t.Fatalf("过期 document 应被删除, count=%d", n)
+	}
+	if contents, chunks := countContentRows(t, conn, expiredDoc); contents != 0 || chunks != 0 {
+		t.Fatalf("过期 document 的正文/chunks 应被删除: contents=%d chunks=%d", contents, chunks)
+	}
+	var expiredJobs int
+	if err := conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embedding_jobs WHERE document_id = ?`, expiredDoc[:],
+	).Scan(&expiredJobs); err != nil {
+		t.Fatalf("统计 embedding_jobs: %v", err)
+	}
+	if expiredJobs != 0 {
+		t.Fatalf("过期 document 的 embedding job 应被删除, count=%d", expiredJobs)
+	}
+	var cleanupJobs int
+	if err := conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vector_cleanup_jobs WHERE document_id = ?`, expiredDoc[:],
+	).Scan(&cleanupJobs); err != nil {
+		t.Fatalf("统计 vector_cleanup_jobs: %v", err)
+	}
+	if cleanupJobs != 1 {
+		t.Fatalf("过期 document 应留下 1 条 Qdrant 清理任务, count=%d", cleanupJobs)
+	}
+
+	// 活跃文档的正文/chunks 不能被误删。
+	if n := countByID(t, conn, "documents", activeDoc); n != 1 {
+		t.Fatalf("活跃 document 应保留, count=%d", n)
+	}
+	if contents, chunks := countContentRows(t, conn, activeDoc); contents != 1 || chunks != 1 {
+		t.Fatalf("活跃 document 的正文/chunks 应保留: contents=%d chunks=%d", contents, chunks)
+	}
+}
+
 func TestIntegrationPurgeRespectsRestoreLock(t *testing.T) {
 	db := openIntegrationDB(t)
 	ctx := context.Background()

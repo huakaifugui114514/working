@@ -273,7 +273,24 @@
   `internal/purge`（按父行短事务、先锁父行再删关联、dry-run、批间 sleep、幂等）+
   `cmd/purge`（retention / batch / interval / dry-run / timeout）。restore 与 purge 通过
   同一父行锁串行化；真实 MySQL 验收：过期/孤儿行清零，保留期内数据与活跃关联保留
-- ⬜ 下一步：M4.1 正文入库 → M4.2 检索 → M4.3 Agent
+- ✅ M4.1 正文入库（0003 迁移 / chunker / repository / service / `PUT /documents/{id}/content` +
+  2 MiB 请求体上限）；purge 同步删除 `document_contents` / `document_chunks`；
+  真实 MySQL + HTTP E2E 验收通过
+- ✅ M4.2 MySQL FULLTEXT 检索 MVP（chunk 级；GET /api/v1/search；2..256 rune、
+  offset 窗口 1000；service/handler/集成测试/真实 curl + EXPLAIN）；已知英文 stopword/
+  短词限制见 ADR 005
+- ✅ M4.3 单轮 RAG Agent（DeepSeek OpenAI-compatible；`POST /api/v1/agent/chat`；
+  citations / 配置 / service/handler；fake-provider + 真实 DeepSeek E2E 均通过；
+  Agent 路由单独延长写超时，12s 慢 provider 验证通过）
+- ✅ M4.4a 本地向量基础设施：Ollama + Qdrant compose profile、BGE-M3 1024 维、
+  Embedder 接口 + Ollama 客户端、固定评测集 + FTS/vector baseline（0.850/0.818 vs 1.000/0.950）
+- ✅ M4.4b `0004_embedding_jobs` + 正文事务 outbox + `cmd/embed` worker +
+  Qdrant REST 写入/删除；真实 MySQL/Ollama/Qdrant E2E 通过
+- ✅ M4.4c VectorRetriever + HybridRetriever（RRF）+ `KF_RETRIEVAL_MODE` +
+  Agent 接入；FTS 无结果、Hybrid 补回正确 citation 的真实 E2E 通过
+- ✅ M4.4d `0005_vector_cleanup_jobs` + `cmd/vector-clean`：purge 后异步删除 Qdrant 向量，
+  pending→done、points 1→0 真实 E2E 通过
+- ⬜ 下一步：M4.5 生产 embedding provider / rerank / 全量 Hybrid 评测 / 灰度与运维文档
 - 错误码归属已定：业务码在 `apperr`，传输层码在 `respond`，映射只在 `respond.StatusForCode`
 - 配置约定：`configs/config.yaml` 必须与 `config.Default()` 一致；本地要改配置用
   `KF_CONFIG_FILE=configs/config.local.yaml`（已 gitignore），**不要**改那份提交的文件
@@ -288,8 +305,14 @@ make run                   # 本地起服务（默认 :8080；需要 MySQL + KF_
 make build                 # 编译到 bin/apid，版本号由 git + ldflags 注入
 KF_SERVER_ADDR=:18080 ./bin/apid   # 环境变量覆盖配置（验证配置分层）
 curl -s localhost:8080/healthz     # 健康检查：版本号 / 启动时间 / 在途请求数
-go run ./cmd/migrate up             # 应用迁移（当前 version=2）
+go run ./cmd/migrate up             # 应用迁移（当前 version=5）
 go run ./cmd/purge -dry-run         # 软删清理预演；确认后去掉 -dry-run
+make ai-up                          # 启动本地 Ollama + Qdrant（M4.4）
+make ai-model                       # 拉取 bge-m3（约 1.2 GB）
+make embed-eval                     # 纯向量评测（需要 Ollama + bge-m3）
+make embed-once                     # 跑一次 embedding worker（需要 Ollama + Qdrant）
+make vector-clean-once              # 跑一次 Qdrant 清理 worker（需要 Qdrant）
+KF_RETRIEVAL_MODE=hybrid make run   # 用 Hybrid 检索（默认 fts）
 ```
 
 **待处理事项（agent 可在合适时机提醒，但不要擅自替用户决定）**
@@ -310,7 +333,15 @@ go run ./cmd/purge -dry-run         # 软删清理预演；确认后去掉 -dry-
    ✅ M2 collections CRUD 完成：database → migrate/0001 → repository → service → handler → cmd/apid。
    ✅ M3 documents 完成：repository + service + handler + 集成测试 + 真实 curl/EXPLAIN 验收。
    ✅ 软删恢复/清理完成：restore 行锁 + 0002 索引 + `internal/purge` + `cmd/purge`，真实 MySQL 验收。
-   ⬜ **下一步**：M4.1 正文入库 → M4.2 检索 → M4.3 Agent。
+   ✅ M4.1 正文入库完成：0003 + chunker + repository + service + `PUT /content` + purge 子表清理。
+   ✅ M4.2 MySQL FULLTEXT 检索 MVP 完成：chunk 级 `/api/v1/search` + 集成测试 + E2E。
+   ✅ M4.3 单轮 RAG Agent 完成：Retriever 抽象 + DeepSeek OpenAI-compatible + citations；
+   真实 DeepSeek HTTP E2E 通过（约 0.7s）。
+   ✅ M4.4a 本地向量基础设施完成：Ollama + Qdrant、BGE-M3、固定评测集、FTS/vector baseline。
+   ✅ M4.4b embedding worker 完成：0004 outbox + `cmd/embed` + Qdrant 写入/删除。
+   ✅ M4.4c Vector/Hybrid 检索完成：RRF、检索模式开关、Agent 接入、真实 E2E。
+   ✅ M4.4d Qdrant 清理完成：0005 outbox + `cmd/vector-clean`。
+   ⬜ **下一步**：M4.5 生产 embedding provider、rerank、全量 Hybrid 评测、灰度与运维文档。
    已踩过的坑记录在提交里：`Shutdown` 必须用 `context.WithoutCancel`（信号 ctx 已取消，
    直接做超时会让"等请求处理完"变成"立刻关掉"）；`atomic.Int64` 不能复制（go vet copylocks）
 4. ✅ `README.md` 已更新（本次提交）：状态、快速开始、真实输出、配置、接口、实现状态齐备

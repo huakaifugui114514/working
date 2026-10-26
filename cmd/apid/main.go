@@ -12,10 +12,13 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/huakaifugui114514/working/internal/agent"
 	"github.com/huakaifugui114514/working/internal/config"
 	"github.com/huakaifugui114514/working/internal/database"
+	"github.com/huakaifugui114514/working/internal/embedding"
 	"github.com/huakaifugui114514/working/internal/knowledge"
 	"github.com/huakaifugui114514/working/internal/observability"
+	"github.com/huakaifugui114514/working/internal/qdrant"
 	"github.com/huakaifugui114514/working/internal/transport/rest"
 	"github.com/huakaifugui114514/working/internal/version"
 )
@@ -67,12 +70,72 @@ func run() error {
 	}()
 
 	// 5. 装配依赖：repository → service → HTTP server。
-	//    main 只做装配，业务规则在 knowledge.Service / DocumentService，SQL 在 MySQLRepository。
-	//    collections 与 documents 共用同一个连接池；仓储本身无状态，多建一个实例没有额外连接。
+	//    main 只做装配，业务规则在 knowledge.Service / DocumentService / ContentService，SQL 在 MySQLRepository。
+	//    collections / documents / content / search 共用同一个连接池；仓储本身无状态，多建一个实例没有额外连接。
 	repo := knowledge.NewMySQLRepository(db)
 	collectionService := knowledge.NewService(repo)
 	documentService := knowledge.NewDocumentService(repo)
-	svc := rest.New(*cfg, logger, version.Get(), collectionService, documentService)
+	contentService := knowledge.NewContentService(repo)
+	searchService := knowledge.NewSearchService(repo, collectionService)
+
+	keywordRetriever := agent.NewKeywordRetriever(searchService)
+	var retriever agent.Retriever = keywordRetriever
+	if cfg.Retrieval.Mode != config.RetrievalFTS {
+		embedder, err := embedding.NewOllamaEmbedder(embedding.OllamaOptions{
+			BaseURL: cfg.Embedding.OllamaURL,
+			Model:   cfg.Embedding.Model,
+			Timeout: cfg.Embedding.Timeout,
+		})
+		if err != nil {
+			return fmt.Errorf("初始化 embedding 客户端失败: %w", err)
+		}
+		vectorStore, err := qdrant.NewClient(qdrant.Options{
+			BaseURL:    cfg.Qdrant.URL,
+			Collection: cfg.Qdrant.Collection,
+			VectorSize: cfg.Qdrant.VectorSize,
+			Timeout:    cfg.Qdrant.Timeout,
+		})
+		if err != nil {
+			return fmt.Errorf("初始化 Qdrant 客户端失败: %w", err)
+		}
+		vectorRetriever := agent.NewVectorRetriever(embedder, vectorStore, repo)
+		switch cfg.Retrieval.Mode {
+		case config.RetrievalVector:
+			retriever = vectorRetriever
+		case config.RetrievalHybrid:
+			retriever = agent.NewHybridRetriever(
+				keywordRetriever,
+				vectorRetriever,
+				cfg.Retrieval.Candidates,
+				cfg.Retrieval.RRFK,
+			)
+		}
+	}
+	logger.Info("Agent 检索模式", "mode", cfg.Retrieval.Mode)
+
+	llmClient, err := agent.NewDeepSeekClient(agent.DeepSeekOptions{
+		BaseURL:   cfg.LLM.BaseURL,
+		APIKey:    cfg.LLM.APIKey,
+		Model:     cfg.LLM.Model,
+		Timeout:   cfg.LLM.Timeout,
+		MaxTokens: cfg.LLM.MaxTokens,
+	})
+	if err != nil {
+		return fmt.Errorf("初始化 LLM 客户端失败: %w", err)
+	}
+	if cfg.LLM.APIKey == "" {
+		logger.Warn("KF_LLM_API_KEY 未配置，/api/v1/agent/chat 会返回 500")
+	}
+	agentService := agent.NewService(
+		retriever,
+		llmClient,
+		collectionService,
+		agent.DefaultTopK,
+		cfg.LLM.MaxTokens,
+	)
+
+	svc := rest.New(*cfg, logger, version.Get(),
+		collectionService, documentService, contentService, searchService, agentService)
 
 	// 6. 信号 ctx：Ctrl+C 是 SIGINT，而 k8s / docker stop 发的是 SIGTERM。
 	//    只监听 SIGINT，线上就会被 SIGKILL 硬杀，优雅退出白写。

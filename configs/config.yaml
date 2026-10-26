@@ -28,6 +28,30 @@ database:
   conn_max_lifetime: 30m # 必须 < MySQL wait_timeout（默认 8h），否则会捡到已被服务端关闭的连接
   conn_max_idle_time: 5m # 空闲连接多久归还给 MySQL
 
+llm:
+  base_url: "https://api.deepseek.com" # OpenAI-compatible；DeepSeek 默认
+  model: "deepseek-chat"
+  # api_key 刻意不写在这里：它只从 KF_LLM_API_KEY 读。
+  timeout: 60s
+  max_tokens: 1024
+
+embedding:
+  ollama_url: "http://127.0.0.1:11434"
+  model: "bge-m3"
+  timeout: 120s
+  batch_size: 16
+
+qdrant:
+  url: "http://127.0.0.1:6333"
+  collection: "document_chunks"
+  vector_size: 1024
+  timeout: 10s
+
+retrieval:
+  mode: fts # fts / vector / hybrid；评测通过后再切 hybrid
+  candidates: 20
+  rrf_k: 60
+
 log:
   level: info # debug / info / warn / error
   format: json # json（线上，便于按字段检索）/ text（本地肉眼读）

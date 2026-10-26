@@ -18,6 +18,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -56,6 +57,28 @@ const (
 	envDatabaseMaxIdleConns = EnvPrefix + "DATABASE_MAX_IDLE_CONNS"
 	envDatabaseConnLife     = EnvPrefix + "DATABASE_CONN_MAX_LIFETIME"
 	envDatabaseConnIdle     = EnvPrefix + "DATABASE_CONN_MAX_IDLE_TIME"
+
+	// LLM / Agent 相关。API key 是密钥，只从环境变量读。
+	envLLMBaseURL   = EnvPrefix + "LLM_BASE_URL"
+	envLLMModel     = EnvPrefix + "LLM_MODEL"
+	envLLMAPIKey    = EnvPrefix + "LLM_API_KEY"
+	envLLMTimeout   = EnvPrefix + "LLM_TIMEOUT"
+	envLLMMaxTokens = EnvPrefix + "LLM_MAX_TOKENS"
+
+	// Embedding / 向量库。M4.4 的 worker 使用；apid 启动不依赖它们可达。
+	envEmbeddingOllamaURL = EnvPrefix + "EMBEDDING_OLLAMA_URL"
+	envEmbeddingModel     = EnvPrefix + "EMBEDDING_MODEL"
+	envEmbeddingTimeout   = EnvPrefix + "EMBEDDING_TIMEOUT"
+	envEmbeddingBatchSize = EnvPrefix + "EMBEDDING_BATCH_SIZE"
+	envQdrantURL          = EnvPrefix + "QDRANT_URL"
+	envQdrantCollection   = EnvPrefix + "QDRANT_COLLECTION"
+	envQdrantVectorSize   = EnvPrefix + "QDRANT_VECTOR_SIZE"
+	envQdrantTimeout      = EnvPrefix + "QDRANT_TIMEOUT"
+
+	// 检索模式：fts / vector / hybrid。默认 fts，评测通过后再切 hybrid。
+	envRetrievalMode       = EnvPrefix + "RETRIEVAL_MODE"
+	envRetrievalCandidates = EnvPrefix + "RETRIEVAL_CANDIDATES"
+	envRetrievalRRFK       = EnvPrefix + "RETRIEVAL_RRF_K"
 )
 
 // Env 是运行环境。
@@ -121,10 +144,14 @@ func (f LogFormat) Valid() bool {
 // 缺了 tag 时 yaml.v3 按字段名小写匹配（ReadTimeout → readtimeout），
 // 而文件里写的是 read_timeout，结果是配置静默失效——值一直是默认值，最难查的一类问题。
 type Config struct {
-	App      App      `yaml:"app"`
-	Server   Server   `yaml:"server"`
-	Database Database `yaml:"database"`
-	Log      Log      `yaml:"log"`
+	App       App       `yaml:"app"`
+	Server    Server    `yaml:"server"`
+	Database  Database  `yaml:"database"`
+	LLM       LLM       `yaml:"llm"`
+	Embedding Embedding `yaml:"embedding"`
+	Qdrant    Qdrant    `yaml:"qdrant"`
+	Retrieval Retrieval `yaml:"retrieval"`
+	Log       Log       `yaml:"log"`
 }
 
 // App 是应用级标识。
@@ -161,6 +188,75 @@ type Database struct {
 	MaxIdleConns    int           `yaml:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
 	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
+}
+
+// LLM 是单轮 RAG 使用的外部模型配置。
+// APIKey 只从环境变量读，配置文件里写它会被 KnownFields 直接拒绝。
+type LLM struct {
+	BaseURL   string        `yaml:"base_url"`
+	Model     string        `yaml:"model"`
+	APIKey    string        `yaml:"-" json:"-"` // ← 关键：不进 YAML，只从 env 读
+	Timeout   time.Duration `yaml:"timeout"`
+	MaxTokens int           `yaml:"max_tokens"`
+}
+
+// LogValue 脱敏 API key，并保留可检索字段。
+func (l LLM) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("base_url", l.BaseURL),
+		slog.String("model", l.Model),
+		slog.String("api_key", "***"),
+		slog.Duration("timeout", l.Timeout),
+		slog.Int("max_tokens", l.MaxTokens),
+	)
+}
+
+// String 覆盖 fmt 路径，避免 API key 被 %v 打印。
+func (l LLM) String() string {
+	return fmt.Sprintf("LLM{base_url=%s model=%s api_key=*** timeout=%s max_tokens=%d}",
+		l.BaseURL, l.Model, l.Timeout, l.MaxTokens)
+}
+
+// Embedding 是本地/远程 embedding 服务配置。
+type Embedding struct {
+	OllamaURL string        `yaml:"ollama_url"`
+	Model     string        `yaml:"model"`
+	Timeout   time.Duration `yaml:"timeout"`
+	BatchSize int           `yaml:"batch_size"`
+}
+
+// Qdrant 是向量库配置。
+type Qdrant struct {
+	URL        string        `yaml:"url"`
+	Collection string        `yaml:"collection"`
+	VectorSize int           `yaml:"vector_size"`
+	Timeout    time.Duration `yaml:"timeout"`
+}
+
+// RetrievalMode 是 Agent 使用的检索实现。
+type RetrievalMode string
+
+const (
+	RetrievalFTS    RetrievalMode = "fts"
+	RetrievalVector RetrievalMode = "vector"
+	RetrievalHybrid RetrievalMode = "hybrid"
+)
+
+// Valid 报告 mode 是否已知。
+func (m RetrievalMode) Valid() bool {
+	switch m {
+	case RetrievalFTS, RetrievalVector, RetrievalHybrid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Retrieval 是 Agent 检索参数。
+type Retrieval struct {
+	Mode       RetrievalMode `yaml:"mode"`
+	Candidates int           `yaml:"candidates"`
+	RRFK       int           `yaml:"rrf_k"`
 }
 
 // LogValue 让结构化日志拿到分组字段（日志平台能按 database.host 检索），
@@ -213,6 +309,29 @@ func Default() *Config {
 			MaxIdleConns:    5,
 			ConnMaxLifetime: 30 * time.Minute,
 			ConnMaxIdleTime: 5 * time.Minute,
+		},
+		LLM: LLM{
+			BaseURL:   "https://api.deepseek.com",
+			Model:     "deepseek-chat",
+			Timeout:   60 * time.Second,
+			MaxTokens: 1024,
+		},
+		Embedding: Embedding{
+			OllamaURL: "http://127.0.0.1:11434",
+			Model:     "bge-m3",
+			Timeout:   120 * time.Second,
+			BatchSize: 16,
+		},
+		Qdrant: Qdrant{
+			URL:        "http://127.0.0.1:6333",
+			Collection: "document_chunks",
+			VectorSize: 1024,
+			Timeout:    10 * time.Second,
+		},
+		Retrieval: Retrieval{
+			Mode:       RetrievalFTS,
+			Candidates: 20,
+			RRFK:       60,
 		},
 		Log: Log{
 			Level:  LogLevelInfo,
@@ -353,6 +472,92 @@ func applyEnv(cfg *Config) error {
 		cfg.Database.ConnMaxIdleTime = d
 	}
 
+	// ---- LLM ----
+	if v, ok := os.LookupEnv(envLLMBaseURL); ok {
+		cfg.LLM.BaseURL = v
+	}
+	if v, ok := os.LookupEnv(envLLMModel); ok {
+		cfg.LLM.Model = v
+	}
+	if v, ok := os.LookupEnv(envLLMAPIKey); ok {
+		cfg.LLM.APIKey = v
+	}
+	if v, ok := os.LookupEnv(envLLMTimeout); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：60s）: %w", envLLMTimeout, v, err)
+		}
+		cfg.LLM.Timeout = d
+	}
+	if v, ok := os.LookupEnv(envLLMMaxTokens); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：1024）: %w", envLLMMaxTokens, v, err)
+		}
+		cfg.LLM.MaxTokens = n
+	}
+
+	// ---- Embedding / Qdrant ----
+	if v, ok := os.LookupEnv(envEmbeddingOllamaURL); ok {
+		cfg.Embedding.OllamaURL = v
+	}
+	if v, ok := os.LookupEnv(envEmbeddingModel); ok {
+		cfg.Embedding.Model = v
+	}
+	if v, ok := os.LookupEnv(envEmbeddingTimeout); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：120s）: %w", envEmbeddingTimeout, v, err)
+		}
+		cfg.Embedding.Timeout = d
+	}
+	if v, ok := os.LookupEnv(envEmbeddingBatchSize); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：16）: %w", envEmbeddingBatchSize, v, err)
+		}
+		cfg.Embedding.BatchSize = n
+	}
+	if v, ok := os.LookupEnv(envQdrantURL); ok {
+		cfg.Qdrant.URL = v
+	}
+	if v, ok := os.LookupEnv(envQdrantCollection); ok {
+		cfg.Qdrant.Collection = v
+	}
+	if v, ok := os.LookupEnv(envQdrantVectorSize); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：1024）: %w", envQdrantVectorSize, v, err)
+		}
+		cfg.Qdrant.VectorSize = n
+	}
+	if v, ok := os.LookupEnv(envQdrantTimeout); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法时长（示例：10s）: %w", envQdrantTimeout, v, err)
+		}
+		cfg.Qdrant.Timeout = d
+	}
+
+	// ---- Retrieval ----
+	if v, ok := os.LookupEnv(envRetrievalMode); ok {
+		cfg.Retrieval.Mode = RetrievalMode(v)
+	}
+	if v, ok := os.LookupEnv(envRetrievalCandidates); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：20）: %w", envRetrievalCandidates, v, err)
+		}
+		cfg.Retrieval.Candidates = n
+	}
+	if v, ok := os.LookupEnv(envRetrievalRRFK); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s=%q 不是合法整数（示例：60）: %w", envRetrievalRRFK, v, err)
+		}
+		cfg.Retrieval.RRFK = n
+	}
+
 	return nil
 }
 
@@ -434,6 +639,66 @@ func (c *Config) Validate() error {
 	if c.Database.ConnMaxIdleTime < 0 {
 		errs = append(errs, fmt.Errorf("database.conn_max_idle_time 不能为负数（0 表示不限制），当前 %s",
 			c.Database.ConnMaxIdleTime))
+	}
+
+	// ---- LLM ----
+	// API key 允许为空：本地可以不配 key 启动，Agent 端点会在调用时返回错误。
+	if c.LLM.BaseURL == "" {
+		errs = append(errs, errors.New("llm.base_url 不能为空"))
+	} else if u, err := url.Parse(c.LLM.BaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, fmt.Errorf("llm.base_url=%q 必须是 http(s) URL", c.LLM.BaseURL))
+	}
+	if c.LLM.Model == "" {
+		errs = append(errs, errors.New("llm.model 不能为空"))
+	}
+	if c.LLM.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("llm.timeout 必须为正数，当前 %s", c.LLM.Timeout))
+	}
+	if c.LLM.MaxTokens < 1 {
+		errs = append(errs, fmt.Errorf("llm.max_tokens 必须 ≥ 1，当前 %d", c.LLM.MaxTokens))
+	}
+
+	// ---- Embedding ----
+	if c.Embedding.OllamaURL == "" {
+		errs = append(errs, errors.New("embedding.ollama_url 不能为空"))
+	} else if u, err := url.Parse(c.Embedding.OllamaURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, fmt.Errorf("embedding.ollama_url=%q 必须是 http(s) URL", c.Embedding.OllamaURL))
+	}
+	if c.Embedding.Model == "" {
+		errs = append(errs, errors.New("embedding.model 不能为空"))
+	}
+	if c.Embedding.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("embedding.timeout 必须为正数，当前 %s", c.Embedding.Timeout))
+	}
+	if c.Embedding.BatchSize < 1 || c.Embedding.BatchSize > 128 {
+		errs = append(errs, fmt.Errorf("embedding.batch_size 必须在 1~128 之间，当前 %d", c.Embedding.BatchSize))
+	}
+
+	// ---- Qdrant ----
+	if c.Qdrant.URL == "" {
+		errs = append(errs, errors.New("qdrant.url 不能为空"))
+	} else if u, err := url.Parse(c.Qdrant.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, fmt.Errorf("qdrant.url=%q 必须是 http(s) URL", c.Qdrant.URL))
+	}
+	if c.Qdrant.Collection == "" {
+		errs = append(errs, errors.New("qdrant.collection 不能为空"))
+	}
+	if c.Qdrant.VectorSize < 1 || c.Qdrant.VectorSize > 8192 {
+		errs = append(errs, fmt.Errorf("qdrant.vector_size 必须在 1~8192 之间，当前 %d", c.Qdrant.VectorSize))
+	}
+	if c.Qdrant.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("qdrant.timeout 必须为正数，当前 %s", c.Qdrant.Timeout))
+	}
+
+	// ---- Retrieval ----
+	if !c.Retrieval.Mode.Valid() {
+		errs = append(errs, fmt.Errorf("retrieval.mode=%q 非法，只允许 fts/vector/hybrid", c.Retrieval.Mode))
+	}
+	if c.Retrieval.Candidates < 1 || c.Retrieval.Candidates > 100 {
+		errs = append(errs, fmt.Errorf("retrieval.candidates 必须在 1~100 之间，当前 %d", c.Retrieval.Candidates))
+	}
+	if c.Retrieval.RRFK < 1 || c.Retrieval.RRFK > 1000 {
+		errs = append(errs, fmt.Errorf("retrieval.rrf_k 必须在 1~1000 之间，当前 %d", c.Retrieval.RRFK))
 	}
 
 	// 注意：这里必须显式判空再 return nil。

@@ -29,11 +29,39 @@ func newTestServerWithCollections(t *testing.T, mutate func(*config.Config), col
 	return newTestServerWithServices(t, mutate, collections, &fakeDocumentService{})
 }
 
+func newTestServerWithContent(t *testing.T, mutate func(*config.Config), contents ContentService) *Server {
+	t.Helper()
+	return newTestServerWithAll(t, mutate, &fakeCollectionService{}, &fakeDocumentService{}, contents, &fakeSearchService{}, &fakeAgentService{})
+}
+
+func newTestServerWithSearch(t *testing.T, mutate func(*config.Config), searches SearchService) *Server {
+	t.Helper()
+	return newTestServerWithAll(t, mutate, &fakeCollectionService{}, &fakeDocumentService{}, &fakeContentService{}, searches, &fakeAgentService{})
+}
+
+func newTestServerWithAgent(t *testing.T, mutate func(*config.Config), agents AgentService) *Server {
+	t.Helper()
+	return newTestServerWithAll(t, mutate, &fakeCollectionService{}, &fakeDocumentService{}, &fakeContentService{}, &fakeSearchService{}, agents)
+}
+
 func newTestServerWithServices(
 	t *testing.T,
 	mutate func(*config.Config),
 	collections CollectionService,
 	documents DocumentService,
+) *Server {
+	t.Helper()
+	return newTestServerWithAll(t, mutate, collections, documents, &fakeContentService{}, &fakeSearchService{}, &fakeAgentService{})
+}
+
+func newTestServerWithAll(
+	t *testing.T,
+	mutate func(*config.Config),
+	collections CollectionService,
+	documents DocumentService,
+	contents ContentService,
+	searches SearchService,
+	agents AgentService,
 ) *Server {
 	t.Helper()
 
@@ -51,8 +79,17 @@ func newTestServerWithServices(
 	if documents == nil {
 		documents = &fakeDocumentService{}
 	}
+	if contents == nil {
+		contents = &fakeContentService{}
+	}
+	if searches == nil {
+		searches = &fakeSearchService{}
+	}
+	if agents == nil {
+		agents = &fakeAgentService{}
+	}
 	return New(*cfg, logger, version.Info{Version: "v-test", Commit: "c0ffee", BuildTime: "2026-01-01T00:00:00Z"},
-		collections, documents)
+		collections, documents, contents, searches, agents)
 }
 
 // do 走 httptest 直接调用装配好的 handler：不起真实端口、不经过网络。
@@ -334,7 +371,7 @@ func TestServerLoggerIsQuiet(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	cfg := *config.Default()
-	s := New(cfg, logger, version.Info{Version: "v-test"}, &fakeCollectionService{}, &fakeDocumentService{})
+	s := New(cfg, logger, version.Info{Version: "v-test"}, &fakeCollectionService{}, &fakeDocumentService{}, &fakeContentService{}, &fakeSearchService{}, &fakeAgentService{})
 
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -354,9 +391,15 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 		name        string
 		collections CollectionService
 		documents   DocumentService
+		contents    ContentService
+		searches    SearchService
+		agents      AgentService
 	}{
-		{name: "collections nil", collections: nil, documents: &fakeDocumentService{}},
-		{name: "documents nil", collections: &fakeCollectionService{}, documents: nil},
+		{name: "collections nil", collections: nil, documents: &fakeDocumentService{}, contents: &fakeContentService{}, searches: &fakeSearchService{}, agents: &fakeAgentService{}},
+		{name: "documents nil", collections: &fakeCollectionService{}, documents: nil, contents: &fakeContentService{}, searches: &fakeSearchService{}, agents: &fakeAgentService{}},
+		{name: "contents nil", collections: &fakeCollectionService{}, documents: &fakeDocumentService{}, contents: nil, searches: &fakeSearchService{}},
+		{name: "searches nil", collections: &fakeCollectionService{}, documents: &fakeDocumentService{}, contents: &fakeContentService{}, searches: nil, agents: &fakeAgentService{}},
+		{name: "agents nil", collections: &fakeCollectionService{}, documents: &fakeDocumentService{}, contents: &fakeContentService{}, searches: &fakeSearchService{}, agents: nil},
 	}
 
 	for _, tt := range tests {
@@ -366,7 +409,7 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 					t.Fatal("New 应当 panic")
 				}
 			}()
-			New(*config.Default(), logger, info, tt.collections, tt.documents)
+			New(*config.Default(), logger, info, tt.collections, tt.documents, tt.contents, tt.searches, tt.agents)
 		})
 	}
 }

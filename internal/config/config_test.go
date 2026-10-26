@@ -32,6 +32,10 @@ func clearEnv(t *testing.T) {
 		envAppEnv, envServerAddr, envServerShutdown, envLogLevel, envLogFormat,
 		envDatabaseHost, envDatabasePort, envDatabaseName, envDatabaseUser, envDatabasePassword,
 		envDatabaseMaxOpenConns, envDatabaseMaxIdleConns, envDatabaseConnLife, envDatabaseConnIdle,
+		envLLMBaseURL, envLLMModel, envLLMAPIKey, envLLMTimeout, envLLMMaxTokens,
+		envEmbeddingOllamaURL, envEmbeddingModel, envEmbeddingTimeout, envEmbeddingBatchSize,
+		envQdrantURL, envQdrantCollection, envQdrantVectorSize, envQdrantTimeout,
+		envRetrievalMode, envRetrievalCandidates, envRetrievalRRFK,
 	} {
 		old, existed := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {
@@ -436,6 +440,282 @@ func TestValidateDatabase(t *testing.T) {
 				t.Errorf("错误信息应包含 %q，实际: %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+// ---- Retrieval 相关 ----
+
+func TestDefaultRetrievalValues(t *testing.T) {
+	r := Default().Retrieval
+	if r.Mode != RetrievalFTS || r.Candidates != 20 || r.RRFK != 60 {
+		t.Fatalf("retrieval = %+v", r)
+	}
+}
+
+func TestRetrievalEnvOverrides(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envRetrievalMode, "hybrid")
+	t.Setenv(envRetrievalCandidates, "30")
+	t.Setenv(envRetrievalRRFK, "80")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.Mode != RetrievalHybrid || cfg.Retrieval.Candidates != 30 || cfg.Retrieval.RRFK != 80 {
+		t.Fatalf("retrieval = %+v", cfg.Retrieval)
+	}
+}
+
+func TestValidateRetrieval(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{name: "默认值合法", mutate: func(*Config) {}},
+		{name: "fts", mutate: func(c *Config) { c.Retrieval.Mode = RetrievalFTS }},
+		{name: "vector", mutate: func(c *Config) { c.Retrieval.Mode = RetrievalVector }},
+		{name: "hybrid", mutate: func(c *Config) { c.Retrieval.Mode = RetrievalHybrid }},
+		{name: "mode 非法", mutate: func(c *Config) { c.Retrieval.Mode = "banana" }, wantErr: "retrieval.mode"},
+		{name: "candidates 为 0", mutate: func(c *Config) { c.Retrieval.Candidates = 0 }, wantErr: "retrieval.candidates"},
+		{name: "rrf_k 为 0", mutate: func(c *Config) { c.Retrieval.RRFK = 0 }, wantErr: "retrieval.rrf_k"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(cfg)
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("期望通过，实际: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("期望错误包含 %q，实际: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// ---- Embedding / Qdrant 相关 ----
+
+func TestDefaultEmbeddingQdrantValues(t *testing.T) {
+	emb := Default().Embedding
+	qd := Default().Qdrant
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"embedding.ollama_url", emb.OllamaURL, "http://127.0.0.1:11434"},
+		{"embedding.model", emb.Model, "bge-m3"},
+		{"embedding.timeout", emb.Timeout, 120 * time.Second},
+		{"embedding.batch_size", emb.BatchSize, 16},
+		{"qdrant.url", qd.URL, "http://127.0.0.1:6333"},
+		{"qdrant.collection", qd.Collection, "document_chunks"},
+		{"qdrant.vector_size", qd.VectorSize, 1024},
+		{"qdrant.timeout", qd.Timeout, 10 * time.Second},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("%s = %v, want %v", tt.name, tt.got, tt.want)
+		}
+	}
+}
+
+func TestEmbeddingQdrantEnvOverrides(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envEmbeddingOllamaURL, "http://ollama.internal:11434")
+	t.Setenv(envEmbeddingModel, "custom-embed")
+	t.Setenv(envEmbeddingTimeout, "30s")
+	t.Setenv(envEmbeddingBatchSize, "32")
+	t.Setenv(envQdrantURL, "http://qdrant.internal:6333")
+	t.Setenv(envQdrantCollection, "custom_chunks")
+	t.Setenv(envQdrantVectorSize, "768")
+	t.Setenv(envQdrantTimeout, "5s")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedding.OllamaURL != "http://ollama.internal:11434" ||
+		cfg.Embedding.Model != "custom-embed" ||
+		cfg.Embedding.Timeout != 30*time.Second ||
+		cfg.Embedding.BatchSize != 32 {
+		t.Fatalf("embedding = %+v", cfg.Embedding)
+	}
+	if cfg.Qdrant.URL != "http://qdrant.internal:6333" ||
+		cfg.Qdrant.Collection != "custom_chunks" ||
+		cfg.Qdrant.VectorSize != 768 ||
+		cfg.Qdrant.Timeout != 5*time.Second {
+		t.Fatalf("qdrant = %+v", cfg.Qdrant)
+	}
+}
+
+func TestValidateEmbeddingQdrant(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{name: "默认值合法", mutate: func(*Config) {}},
+		{name: "ollama_url 为空", mutate: func(c *Config) { c.Embedding.OllamaURL = "" }, wantErr: "embedding.ollama_url"},
+		{name: "ollama_url 非法", mutate: func(c *Config) { c.Embedding.OllamaURL = "file:///tmp" }, wantErr: "embedding.ollama_url"},
+		{name: "model 为空", mutate: func(c *Config) { c.Embedding.Model = "" }, wantErr: "embedding.model"},
+		{name: "timeout 为 0", mutate: func(c *Config) { c.Embedding.Timeout = 0 }, wantErr: "embedding.timeout"},
+		{name: "batch_size 为 0", mutate: func(c *Config) { c.Embedding.BatchSize = 0 }, wantErr: "embedding.batch_size"},
+		{name: "qdrant url 为空", mutate: func(c *Config) { c.Qdrant.URL = "" }, wantErr: "qdrant.url"},
+		{name: "collection 为空", mutate: func(c *Config) { c.Qdrant.Collection = "" }, wantErr: "qdrant.collection"},
+		{name: "vector_size 为 0", mutate: func(c *Config) { c.Qdrant.VectorSize = 0 }, wantErr: "qdrant.vector_size"},
+		{name: "qdrant timeout 为 0", mutate: func(c *Config) { c.Qdrant.Timeout = 0 }, wantErr: "qdrant.timeout"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(cfg)
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("期望通过，实际: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("期望错误包含 %q，实际: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// ---- LLM 相关 ----
+
+func TestDefaultLLMValues(t *testing.T) {
+	llm := Default().LLM
+
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"base_url", llm.BaseURL, "https://api.deepseek.com"},
+		{"model", llm.Model, "deepseek-chat"},
+		{"api_key", llm.APIKey, ""}, // 默认必须为空：密钥只能从环境变量来
+		{"timeout", llm.Timeout, 60 * time.Second},
+		{"max_tokens", llm.MaxTokens, 1024},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("llm.%s = %v, want %v", tt.name, tt.got, tt.want)
+		}
+	}
+}
+
+func TestLLMEnvOverrides(t *testing.T) {
+	clearEnv(t)
+
+	t.Setenv(envLLMBaseURL, "https://llm.example.com/v1")
+	t.Setenv(envLLMModel, "test-model")
+	t.Setenv(envLLMAPIKey, "from-env")
+	t.Setenv(envLLMTimeout, "15s")
+	t.Setenv(envLLMMaxTokens, "256")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+
+	llm := cfg.LLM
+	if llm.BaseURL != "https://llm.example.com/v1" || llm.Model != "test-model" {
+		t.Errorf("字符串覆盖失败: %+v", llm)
+	}
+	if llm.APIKey != "from-env" {
+		t.Error("KF_LLM_API_KEY 应覆盖 api_key（这是密钥的唯一来源）")
+	}
+	if llm.Timeout != 15*time.Second || llm.MaxTokens != 256 {
+		t.Errorf("timeout/max_tokens 覆盖失败: %+v", llm)
+	}
+}
+
+func TestLLMEnvParseErrors(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{envLLMTimeout, "60"},
+		{envLLMMaxTokens, "abc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			_, err := Load("")
+			if err == nil {
+				t.Fatalf("%s=%q 应当报错", tt.key, tt.value)
+			}
+			if !strings.Contains(err.Error(), tt.key) {
+				t.Errorf("错误信息里应包含变量名 %s，实际: %v", tt.key, err)
+			}
+		})
+	}
+}
+
+func TestValidateLLM(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{name: "默认值合法", mutate: func(*Config) {}},
+		{name: "api_key 为空合法", mutate: func(c *Config) { c.LLM.APIKey = "" }},
+		{name: "base_url 为空", mutate: func(c *Config) { c.LLM.BaseURL = "" }, wantErr: "llm.base_url"},
+		{name: "base_url 不是 http(s)", mutate: func(c *Config) { c.LLM.BaseURL = "file:///tmp" }, wantErr: "llm.base_url"},
+		{name: "model 为空", mutate: func(c *Config) { c.LLM.Model = "" }, wantErr: "llm.model"},
+		{name: "timeout 为 0", mutate: func(c *Config) { c.LLM.Timeout = 0 }, wantErr: "llm.timeout"},
+		{name: "max_tokens 为 0", mutate: func(c *Config) { c.LLM.MaxTokens = 0 }, wantErr: "llm.max_tokens"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(cfg)
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("期望通过校验，实际: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("期望报错（应包含 %q），实际为 nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("错误信息应包含 %q，实际: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestLLMRedaction(t *testing.T) {
+	const secret = "LLMSecret123!"
+	cfg := Default()
+	cfg.LLM.APIKey = secret
+
+	if out := fmt.Sprintf("%v", cfg.LLM); strings.Contains(out, secret) || !strings.Contains(out, "***") {
+		t.Fatalf("fmt %%v 应脱敏: %s", out)
+	}
+	if out := fmt.Sprintf("%+v", *cfg); strings.Contains(out, secret) || !strings.Contains(out, "***") {
+		t.Fatalf("fmt %%+v 应脱敏: %s", out)
+	}
+
+	var buf bytes.Buffer
+	slog.New(slog.NewTextHandler(&buf, nil)).Info("配置已加载", "llm", cfg.LLM)
+	if strings.Contains(buf.String(), secret) {
+		t.Fatalf("slog 输出泄露 API key: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "llm.api_key=***") {
+		t.Fatalf("slog 输出应包含 llm.api_key=***: %s", buf.String())
 	}
 }
 

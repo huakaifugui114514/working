@@ -3,7 +3,7 @@
 // 设计约束（见 docs/adr/004-documents-api.md）：
 //   - 只清理 deleted_at 早于保留期的行；读路径完全不受影响
 //   - 按父行（document / collection）开短事务，先锁父行再删子行
-//   - 先删关联，再删 document / collection；没有关联的过期行才允许物理删除
+//   - 先删关联、正文和 chunks，再删 document / collection；没有关联的过期行才允许物理删除
 //   - 不依赖外键（schema 故意没有 FK），一致性由事务里的条件判断兜底
 //
 // restore 与 purge 的并发协议：双方都对同一父行执行 SELECT ... FOR UPDATE。
@@ -78,9 +78,13 @@ func (o Options) Validate() error {
 // Stats 是一次运行的统计。
 //
 // 非 DryRun 时字段是实际删除行数；DryRun 时是预计会删除的行数。
-// Associations 统计的是 collection_documents 行数，不是 document 数。
+// Associations 统计的是 collection_documents 行数，不是 document 数；
+// Contents / Chunks 分别统计 document_contents / document_chunks 行数。
 type Stats struct {
 	Associations int64
+	Contents     int64
+	Chunks       int64
+	Jobs         int64
 	Documents    int64
 	Collections  int64
 	Batches      int
@@ -109,7 +113,7 @@ func NewRunner(db DB, logger *slog.Logger) *Runner {
 // 每一轮先取一批候选 document / collection id，然后逐个父行开事务：
 //  1. SELECT ... FOR UPDATE 锁父行
 //  2. 重新确认 deleted_at 仍然过期（restore 可能已经抢先把它改回 NULL）
-//  3. 删除关联
+//  3. 删除关联、正文和 chunks
 //  4. 删除父行
 //  5. 提交
 //
@@ -137,6 +141,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 		}
 		r.logger.InfoContext(ctx, "purge dry-run 完成",
 			"associations", stats.Associations,
+			"contents", stats.Contents,
+			"chunks", stats.Chunks,
 			"documents", stats.Documents,
 			"collections", stats.Collections)
 		return stats, nil
@@ -159,13 +165,16 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 		var progressed int64
 
 		for _, id := range documentIDs {
-			associations, documents, err := r.purgeDocument(ctx, id, cutoff)
+			associations, contents, chunks, jobs, documents, err := r.purgeDocument(ctx, id, cutoff)
 			if err != nil {
 				return stats, err
 			}
 			stats.Associations += associations
+			stats.Contents += contents
+			stats.Chunks += chunks
+			stats.Jobs += jobs
 			stats.Documents += documents
-			progressed += associations + documents
+			progressed += associations + documents + contents + chunks
 		}
 		for _, id := range collectionIDs {
 			associations, collections, err := r.purgeCollection(ctx, id, cutoff)
@@ -180,6 +189,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 		r.logger.DebugContext(ctx, "purge 批次完成",
 			"batch", stats.Batches,
 			"associations", stats.Associations,
+			"contents", stats.Contents,
+			"chunks", stats.Chunks,
 			"documents", stats.Documents,
 			"collections", stats.Collections)
 
@@ -195,6 +206,9 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 
 	r.logger.InfoContext(ctx, "purge 完成",
 		"associations", stats.Associations,
+		"contents", stats.Contents,
+		"chunks", stats.Chunks,
+		"jobs", stats.Jobs,
 		"documents", stats.Documents,
 		"collections", stats.Collections,
 		"batches", stats.Batches)
@@ -204,7 +218,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Stats, error) {
 // countCandidates 统计 dry-run 会删除的行数。
 //
 // 关联用 OR 统计：同一个关联同时指向过期 document 和过期 collection 时只算一次。
-// document / collection 直接数过期行：过期父行的关联会被先删掉，最终都会被物理删除。
+// document / collection 直接数过期行；content / chunks 通过 JOIN documents 统计，
+// 只算会被同一次 purge 一起删掉的行。
 func (r *Runner) countCandidates(ctx context.Context, cutoff time.Time, stats *Stats) error {
 	queries := []struct {
 		name string
@@ -232,6 +247,33 @@ func (r *Runner) countCandidates(ctx context.Context, cutoff time.Time, stats *S
 			dst:  &stats.Documents,
 		},
 		{
+			name: "contents",
+			stmt: `SELECT COUNT(*)
+				   FROM document_contents c
+				   JOIN documents d ON d.id = c.document_id
+				   WHERE d.deleted_at IS NOT NULL AND d.deleted_at < ?`,
+			args: []any{cutoff},
+			dst:  &stats.Contents,
+		},
+		{
+			name: "chunks",
+			stmt: `SELECT COUNT(*)
+				   FROM document_chunks c
+				   JOIN documents d ON d.id = c.document_id
+				   WHERE d.deleted_at IS NOT NULL AND d.deleted_at < ?`,
+			args: []any{cutoff},
+			dst:  &stats.Chunks,
+		},
+		{
+			name: "jobs",
+			stmt: `SELECT COUNT(*)
+				   FROM embedding_jobs j
+				   JOIN documents d ON d.id = j.document_id
+				   WHERE d.deleted_at IS NOT NULL AND d.deleted_at < ?`,
+			args: []any{cutoff},
+			dst:  &stats.Jobs,
+		},
+		{
 			name: "collections",
 			stmt: `SELECT COUNT(*)
 				   FROM collections c
@@ -249,45 +291,83 @@ func (r *Runner) countCandidates(ctx context.Context, cutoff time.Time, stats *S
 	return nil
 }
 
+const upsertVectorCleanupJob = `INSERT INTO vector_cleanup_jobs
+	(document_id, status, attempts, available_at, created_at, updated_at)
+	VALUES (?, 'pending', 0, ?, ?, ?) AS new
+	ON DUPLICATE KEY UPDATE
+	status = 'pending',
+	attempts = 0,
+	available_at = new.available_at,
+	locked_at = NULL,
+	locked_by = NULL,
+	last_error = NULL,
+	updated_at = new.updated_at`
+
 // purgeDocument 在一个事务里处理一个过期 document。
 //
 // 先锁父行再删关联，是 restore 与 purge 并发正确性的核心：
 // restore 也会对同一行 FOR UPDATE，二者只能有一个先拿到锁。
-func (r *Runner) purgeDocument(ctx context.Context, id uuid.UUID, cutoff time.Time) (associations, documents int64, err error) {
+func (r *Runner) purgeDocument(ctx context.Context, id uuid.UUID, cutoff time.Time) (associations, contents, chunks, jobs, documents int64, err error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, fmt.Errorf("begin purge document id(%x): %w", id[:], err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("begin purge document id(%x): %w", id[:], err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	eligible, err := lockExpiredDocument(ctx, tx, id, cutoff)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, 0, err
 	}
 	if !eligible {
-		return 0, 0, nil
+		return 0, 0, 0, 0, 0, nil
 	}
 
 	associations, err = execDelete(ctx, tx,
 		`DELETE FROM collection_documents WHERE document_id = ?`, id[:])
 	if err != nil {
-		return 0, 0, fmt.Errorf("delete document associations id(%x): %w", id[:], err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("delete document associations id(%x): %w", id[:], err)
+	}
+
+	// M4.4 增加 embedding_jobs 后，同样要在删 documents 之前清理，避免孤儿任务。
+	jobs, err = execDelete(ctx, tx,
+		`DELETE FROM embedding_jobs WHERE document_id = ?`, id[:])
+	if err != nil {
+		return 0, 0, 0, 0, 0, fmt.Errorf("delete embedding jobs id(%x): %w", id[:], err)
+	}
+
+	// M4.4d：在删 documents 之前写清理 outbox；Qdrant 调用由 cleanup worker 异步做。
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := tx.ExecContext(ctx, upsertVectorCleanupJob,
+		id[:], now, now, now); err != nil {
+		return 0, 0, 0, 0, 0, fmt.Errorf("upsert vector_cleanup_jobs id(%x): %w", id[:], err)
 	}
 
 	// M4.1 增加 document_chunks / document_contents 后，这里必须在删 documents
 	// 之前先按 document_id 删除正文和 chunk，否则会留下孤儿数据。
+	contents, err = execDelete(ctx, tx,
+		`DELETE FROM document_contents WHERE document_id = ?`, id[:])
+	if err != nil {
+		return 0, 0, 0, 0, 0, fmt.Errorf("delete contents id(%x): %w", id[:], err)
+	}
+
+	chunks, err = execDelete(ctx, tx,
+		`DELETE FROM document_chunks WHERE document_id = ?`, id[:])
+	if err != nil {
+		return 0, 0, 0, 0, 0, fmt.Errorf("delete chunks id(%x): %w", id[:], err)
+	}
 
 	documents, err = execDelete(ctx, tx, `DELETE FROM documents WHERE id = ?`, id[:])
 	if err != nil {
-		return 0, 0, fmt.Errorf("delete document id(%x): %w", id[:], err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("delete document id(%x): %w", id[:], err)
 	}
+
 	if documents != 1 {
-		return 0, 0, fmt.Errorf("delete document id(%x) affected %d rows, want 1", id[:], documents)
+		return 0, 0, 0, 0, 0, fmt.Errorf("delete document id(%x) affected %d rows, want 1", id[:], documents)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("commit purge document id(%x): %w", id[:], err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("commit purge document id(%x): %w", id[:], err)
 	}
-	return associations, documents, nil
+	return associations, contents, chunks, jobs, documents, nil
 }
 
 // purgeCollection 在一个事务里处理一个过期 collection。

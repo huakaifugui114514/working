@@ -69,6 +69,31 @@ build: ## 编译到 bin/apid（版本号由 ldflags 注入）
 run: ## 本地运行（go run，版本号为 dev）
 	@go run ./cmd/$(APP)
 
+.PHONY: ai-up
+ai-up: ## 启动本地 Ollama + Qdrant（M4.4 用）
+	@docker compose -f deploy/docker-compose.yml --profile ai up -d qdrant ollama
+	@echo "Ollama :11434  Qdrant :6333"
+
+.PHONY: ai-model
+ai-model: ## 拉取 bge-m3（先 make ai-up）
+	@docker exec knowflow-ollama ollama pull bge-m3
+
+.PHONY: ai-stop
+ai-stop: ## 停止 Ollama + Qdrant（保留 volume）
+	@docker compose -f deploy/docker-compose.yml --profile ai stop qdrant ollama
+
+.PHONY: embed-eval
+embed-eval: ## 纯向量评测（需要 Ollama + bge-m3）
+	@go run ./cmd/embed-eval -set internal/eval/testdata/search_eval.json
+
+.PHONY: embed-once
+embed-once: ## 处理当前到期 embedding 任务后退出（需要 Ollama + Qdrant）
+	@go run ./cmd/embed -once
+
+.PHONY: vector-clean-once
+vector-clean-once: ## 处理当前到期 Qdrant 向量清理任务后退出（需要 Qdrant）
+	@go run ./cmd/vector-clean -once
+
 .PHONY: check
 check: fmt vet lint test ## 提交前一键检查：fmt + vet + lint + test
 

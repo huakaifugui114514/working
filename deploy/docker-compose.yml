@@ -1,8 +1,10 @@
-# 本地开发用的 MySQL。它不是生产部署方案，只解决"本机怎么快速起一个能连、能验证迁移的库"。
+# 本地开发栈：MySQL + （可选）Ollama / Qdrant。
+# 它不是生产部署方案；Ollama/Qdrant 通过 profile "ai" 单独启动，避免每次 CRUD 都拉大镜像。
 #
 # 用法：
 #   cd deploy && cp .env.example .env && ${EDITOR:-vi} .env   # 填两个密码
-#   docker compose up -d
+#   docker compose up -d                   # 只起 MySQL
+#   docker compose --profile ai up -d     # 额外起 Ollama + Qdrant
 #   docker compose ps                      # 等 STATE 变成 healthy
 #   docker compose exec mysql mysql -uknowflow -p -e 'SELECT VERSION()'
 #   docker compose down                    # 停（数据留在卷里）
@@ -57,5 +59,39 @@ services:
       # 否则容器会在初始化完成前就被判成 unhealthy
       start_period: 40s
 
+  # ---- M4.4：本地 embedding / 向量库（可选） ----
+  # 国内网络拉不到 Docker Hub 时，可以用环境变量覆盖成镜像站：
+  #   QDRANT_IMAGE=docker.m.daocloud.io/qdrant/qdrant:v1.12.4
+  #   OLLAMA_IMAGE=docker.m.daocloud.io/ollama/ollama:0.5.7
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.12.4}
+    container_name: knowflow-qdrant
+    restart: unless-stopped
+    profiles: ["ai"]
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.5.7}
+    container_name: knowflow-ollama
+    restart: unless-stopped
+    profiles: ["ai"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    # 只跑 embedding，不需要 GPU。CPU 推理慢，仅用于本地开发/评测。
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
 volumes:
   mysql-data:
+  qdrant-data:
+  ollama-data:

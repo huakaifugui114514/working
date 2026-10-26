@@ -13,6 +13,8 @@ info:
     - `cursor` 是不透明 token；客户端只能原样回传，不要解析。
     - collections 列表按 `(created_at DESC, id DESC)` 排序。
     - 某个 collection 下的 documents 按 `(added_at DESC, document_id DESC)` 排序。
+    - search 结果按 `(score DESC, chunk_id DESC)` 排序；`offset + limit <= 1000`。
+    - agent/chat 是单轮 RAG；citations 是检索来源，index 对应 [n]。
 
 servers:
   - url: /
@@ -22,6 +24,10 @@ tags:
     description: 知识库的创建、查询、分页、更新与软删。
   - name: documents
     description: 文档元数据，以及文档与知识库的多对多关联。
+  - name: search
+    description: 基于 ngram FULLTEXT 的 chunk 级检索。
+  - name: agent
+    description: 单轮 RAG Agent（检索 + LLM 生成 + 引用）。
 
 paths:
   /api/v1/collections:
@@ -308,6 +314,34 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/documents/{id}/content:
+    parameters:
+      - $ref: '#/components/parameters/DocumentID'
+
+    put:
+      tags: [documents]
+      operationId: replaceDocumentContent
+      summary: 整体替换文档正文
+      description: |
+        事务内整体替换正文与分块，不是追加。文档不存在或已软删返回 404。
+        `content` 为空/纯空白 → 400；UTF-8 字节数超过 1 MiB → 400。
+        成功返回 204，无响应体。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceDocumentContent'
+      responses:
+        '204':
+          description: 替换成功，无响应体
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/collections/{id}/documents:
     parameters:
       - $ref: '#/components/parameters/CollectionID'
@@ -400,6 +434,96 @@ paths:
       responses:
         '204':
           description: 关联已移除，无响应体
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/search:
+    get:
+      tags: [search]
+      operationId: searchChunks
+      summary: 检索文档分块
+      description: |
+        基于 `document_chunks.content` 的 ngram FULLTEXT 检索，返回 chunk 粒度结果。
+        `q` trim 后至少 2 个 rune（MySQL `ngram_token_size=2`）；1 个字符 → 400。
+        结果按 `(score DESC, chunk_id DESC)` 排序；`next_offset` 为 `null` 表示没有下一页。
+        不传 `collection_id` 时全局检索；传了但不存在/已软删 → 404。
+        `offset + limit > 1000` → 400；到达 1000 窗口上限后 `next_offset` 为 `null`。
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: 查询词，trim 后 2..256 个 rune。
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 256
+        - name: collection_id
+          in: query
+          required: false
+          description: 只在该知识库内检索；不存在/已软删 → 404。
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: 每页条数，默认 20；`offset + limit` 不能超过 1000。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          description: 跳过条数，默认 0；`offset + limit` 不能超过 1000。
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000
+            default: 0
+      responses:
+        '200':
+          description: 一页检索结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/agent/chat:
+    post:
+      tags: [agent]
+      operationId: agentChat
+      summary: 单轮 RAG 问答
+      description: |
+        先检索相关 chunk，再把编号后的资料交给 LLM 生成回答。
+        当前是单轮：不接收 conversation_id，也不保存对话历史。
+        `citations` 返回本次检索到的来源，`index` 对应回答里的 `[n]` 编号；
+        MVP 不校验模型是否真的写了正确的 `[n]`。
+        没有检索结果时返回固定 answer 和空 citations，不调用 LLM。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentChatRequest'
+      responses:
+        '200':
+          description: 回答与引用来源
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentChatResponse'
         '400':
           $ref: '#/components/responses/InvalidArgument'
         '404':
@@ -602,6 +726,18 @@ components:
           minimum: 0
           nullable: true
 
+    ReplaceDocumentContent:
+      type: object
+      required: [content]
+      additionalProperties: false
+      properties:
+        content:
+          type: string
+          minLength: 1
+          description: |
+            完整正文。服务端按 UTF-8 字节数限制 1 MiB；空串/纯空白 → 400。
+            分块由服务端完成，客户端不要自己切。
+
     AddDocumentRequest:
       type: object
       required: [document_id]
@@ -635,6 +771,102 @@ components:
           type: string
           nullable: true
           description: 没有下一页时为 null；否则原样回传。
+
+    SearchHit:
+      type: object
+      required: [chunk_id, document_id, document_title, chunk_index, content, score]
+      properties:
+        chunk_id:
+          type: string
+          format: uuid
+          readOnly: true
+        document_id:
+          type: string
+          format: uuid
+          readOnly: true
+        document_title:
+          type: string
+          description: 命中 chunk 所属文档的标题。
+        chunk_index:
+          type: integer
+          minimum: 0
+          description: chunk 在文档内的序号，从 0 开始。
+        content:
+          type: string
+          description: 命中的 chunk 原文；MVP 不做服务端高亮。
+        score:
+          type: number
+          format: double
+          description: FULLTEXT relevance score，仅用于本次查询排序。
+
+    AgentChatRequest:
+      type: object
+      required: [message]
+      additionalProperties: false
+      properties:
+        collection_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 可选；只在该知识库内检索。不存在/已软删 → 404。
+        message:
+          type: string
+          minLength: 2
+          maxLength: 4000
+          description: 单轮问题；trim 后 2..4000 个 rune。
+
+    AgentCitation:
+      type: object
+      required: [index, chunk_id, document_id, document_title, chunk_index, content, score]
+      properties:
+        index:
+          type: integer
+          minimum: 1
+          description: 从 1 开始，对应 prompt 里的 [n]。
+        chunk_id:
+          type: string
+          format: uuid
+        document_id:
+          type: string
+          format: uuid
+        document_title:
+          type: string
+        chunk_index:
+          type: integer
+          minimum: 0
+        content:
+          type: string
+        score:
+          type: number
+          format: double
+
+    AgentChatResponse:
+      type: object
+      required: [answer, citations]
+      properties:
+        answer:
+          type: string
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCitation'
+
+    SearchResponse:
+      type: object
+      required: [items, next_offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchHit'
+        next_offset:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          nullable: true
+          description: |
+            没有下一页、或已经到达 1000 窗口上限时为 null；
+            否则把它作为下一次请求的 offset 原样传入。
 
     Error:
       type: object
